@@ -20,20 +20,21 @@ import (
 // Configuration is the blockchaincfg.json shape for Bitcoin-type chains.
 // It mirrors the fields Blockbook expects for RPC auth + mempool settings.
 type Configuration struct {
-	CoinName             string `json:"coin_name"`
-	CoinShortcut         string `json:"coin_shortcut"`
-	RPCURL               string `json:"rpc_url"`
-	RPCUser              string `json:"rpc_user"`
-	RPCPass              string `json:"rpc_pass"`
-	RPCTimeout           int    `json:"rpc_timeout"`
-	Parse                bool   `json:"parse"`
-	MessageQueueBinding  string `json:"message_queue_binding"`
-	Subversion           string `json:"subversion"`
-	AddressFormat        string `json:"address_format"`
-	XPubMagic            uint32 `json:"xpub_magic,omitempty"`
-	BlockAddressesToKeep int    `json:"block_addresses_to_keep"`
-	MempoolWorkers       int    `json:"mempool_workers"`
-	MempoolSubWorkers    int    `json:"mempool_sub_workers"`
+	CoinName               string `json:"coin_name"`
+	CoinShortcut           string `json:"coin_shortcut"`
+	RPCURL                 string `json:"rpc_url"`
+	RPCUser                string `json:"rpc_user"`
+	RPCPass                string `json:"rpc_pass"`
+	RPCTimeout             int    `json:"rpc_timeout"`
+	Parse                  bool   `json:"parse"`
+	MessageQueueBinding    string `json:"message_queue_binding"`
+	Subversion             string `json:"subversion"`
+	AddressFormat          string `json:"address_format"`
+	XPubMagic              uint32 `json:"xpub_magic,omitempty"`
+	BlockAddressesToKeep   int    `json:"block_addresses_to_keep"`
+	MempoolWorkers         int    `json:"mempool_workers"`
+	MempoolSubWorkers      int    `json:"mempool_sub_workers"`
+	MempoolResyncBatchSize int    `json:"mempool_resync_batch_size,omitempty"`
 }
 
 // PearlRPC is a Blockbook chain implementation for Pearl that uses pearl/node libraries.
@@ -68,6 +69,9 @@ func NewPearlRPC(config json.RawMessage, pushHandler func(bchain.NotificationTyp
 	}
 	if c.MempoolSubWorkers < 1 {
 		c.MempoolSubWorkers = 1
+	}
+	if c.MempoolResyncBatchSize < 1 {
+		c.MempoolResyncBatchSize = 1
 	}
 
 	u, err := url.Parse(c.RPCURL)
@@ -130,7 +134,7 @@ func (d *PearlRPC) Initialize() error {
 
 func (d *PearlRPC) CreateMempool(chain bchain.BlockChain) (bchain.Mempool, error) {
 	if d.mempool == nil {
-		d.mempool = bchain.NewMempoolBitcoinType(chain, d.cfg.MempoolWorkers, d.cfg.MempoolSubWorkers, 0, "", false)
+		d.mempool = bchain.NewMempoolBitcoinType(chain, d.cfg.MempoolWorkers, d.cfg.MempoolSubWorkers, 0, "", false, d.cfg.MempoolResyncBatchSize)
 	}
 	return d.mempool, nil
 }
@@ -150,7 +154,14 @@ func (d *PearlRPC) InitializeMempool(addrDescForOutpoint bchain.AddrDescForOutpo
 	}
 
 	if d.mq == nil {
-		mq, err := bchain.NewMQ(d.cfg.MessageQueueBinding, d.pushHandler)
+		pearlTopics := bchain.SubscriptionTopics{
+			BlockSubscribe: "hashblock",
+			BlockReceive:   "hashblock",
+			TxSubscribe:    "hashtx",
+			TxReceive:      "hashtx",
+		}
+
+		mq, err := bchain.NewMQ(d.cfg.MessageQueueBinding, d.pushHandler, pearlTopics)
 		if err != nil {
 			glog.Error("mq: ", err)
 			return err
