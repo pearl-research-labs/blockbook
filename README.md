@@ -1,4 +1,4 @@
-[![Go Report Card](https://goreportcard.com/badge/trezor/blockbook)](https://goreportcard.com/report/trezor/blockbook)
+[![Go Report Card](https://goreportcard.com/badge/github.com/pearl-research-labs/blockbook)](https://goreportcard.com/report/github.com/pearl-research-labs/blockbook)
 
 # Blockbook
 
