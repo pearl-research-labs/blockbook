@@ -45,6 +45,7 @@ import (
 	"github.com/trezor/blockbook/bchain/coins/nuls"
 	"github.com/trezor/blockbook/bchain/coins/omotenashicoin"
 	"github.com/trezor/blockbook/bchain/coins/optimism"
+	"github.com/trezor/blockbook/bchain/coins/pearl"
 	"github.com/trezor/blockbook/bchain/coins/pivx"
 	"github.com/trezor/blockbook/bchain/coins/polis"
 	"github.com/trezor/blockbook/bchain/coins/polygon"
@@ -155,6 +156,9 @@ func init() {
 	BlockChainFactories["Base Archive"] = base.NewBaseRPC
 	BlockChainFactories["Tron"] = tron.NewTronRPC
 	BlockChainFactories["Tron Testnet Nile"] = tron.NewTronRPC
+	BlockChainFactories["Pearl"] = pearl.NewPearlRPC
+	BlockChainFactories["Pearl Testnet"] = pearl.NewPearlRPC
+	BlockChainFactories["Pearl Testnet2"] = pearl.NewPearlRPC
 }
 
 type metricsSetter interface {
