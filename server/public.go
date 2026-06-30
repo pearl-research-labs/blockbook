@@ -1045,7 +1045,6 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 	var voutFilter = api.AddressFilterVoutOff
 	page := validateIntParam(r.URL.Query().Get("page"), 0, 0, maxPageNumber)
 	pageSize := validateIntParam(r.URL.Query().Get("pageSize"), maxPageSize, 0, maxPageSize)
-	page, pageSize = sanitizeAccountPagingParams(page, pageSize, maxPageSize, maxPageSize)
 	from := validateIntParam(r.URL.Query().Get("from"), 0, 0, 10000000000)
 	to := validateIntParam(r.URL.Query().Get("to"), 0, 0, 10000000000)
 
@@ -1076,6 +1075,7 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 	case "txs":
 		accountDetails = api.AccountDetailsTxHistory
 	}
+	page, pageSize = sanitizeAccountPagingParams(page, pageSize, maxPageSize, maxPageSize)
 	tokensToReturn := api.TokensToReturnNonzeroBalance
 	switch r.URL.Query().Get("tokens") {
 	case "derived":

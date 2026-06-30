@@ -3,11 +3,16 @@
 package pearl
 
 import (
+	"bytes"
+	"encoding/hex"
+	"math/big"
 	"strings"
 	"testing"
 
 	"github.com/pearl-research-labs/pearl/node/btcutil/hdkeychain"
 	"github.com/pearl-research-labs/pearl/node/chaincfg"
+	"github.com/pearl-research-labs/pearl/node/chaincfg/chainhash"
+	"github.com/pearl-research-labs/pearl/node/wire"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"github.com/trezor/blockbook/bchain"
@@ -100,4 +105,54 @@ func TestPearlParser_RejectsUnsupportedDescriptorTypes(t *testing.T) {
 
 	_, err := parser.ParseXpub("wpkh(" + testPearlXpub(t) + "/0/*)")
 	require.Error(t, err, "non-Taproot descriptor should be rejected")
+}
+
+func TestPearlParser_RawTransactionRoundTrip(t *testing.T) {
+	parser := NewPearlParser("main", &Configuration{XPubMagic: testXPubMagic})
+	rawTx, msgTx, script := testPearlRawTx(t, parser)
+
+	tx, err := parser.ParseTx(rawTx)
+	require.NoError(t, err)
+	assert.Equal(t, msgTx.TxHash().String(), tx.Txid)
+	assert.Equal(t, hex.EncodeToString(rawTx), tx.Hex)
+	assert.Positive(t, tx.VSize)
+	require.Len(t, tx.Vin, 1)
+	require.Len(t, tx.Vin[0].Witness, 1)
+	assert.Equal(t, []byte{0x01, 0x02, 0x03}, tx.Vin[0].Witness[0])
+	require.Len(t, tx.Vout, 1)
+	assert.Equal(t, script, tx.Vout[0].ScriptPubKey.Hex)
+	assert.Equal(t, big.NewInt(123456789), &tx.Vout[0].ValueSat)
+	require.Len(t, tx.Vout[0].ScriptPubKey.Addresses, 1)
+	assert.True(t, strings.HasPrefix(tx.Vout[0].ScriptPubKey.Addresses[0], "prl1p"))
+
+	packed, err := parser.PackTx(tx, 123, 456789)
+	require.NoError(t, err)
+	got, height, err := parser.UnpackTx(packed)
+	require.NoError(t, err)
+	assert.Equal(t, uint32(123), height)
+	assert.Equal(t, int64(456789), got.Blocktime)
+	assert.Equal(t, tx.Txid, got.Txid)
+	assert.Equal(t, tx.Hex, got.Hex)
+	require.Len(t, got.Vout, 1)
+	assert.Equal(t, tx.Vout[0].ValueSat.String(), got.Vout[0].ValueSat.String())
+}
+
+func testPearlRawTx(t *testing.T, parser *PearlParser) ([]byte, *wire.MsgTx, string) {
+	t.Helper()
+
+	descriptor, err := parser.ParseXpub(testPearlXpub(t))
+	require.NoError(t, err)
+	addrDescs, err := parser.DeriveAddressDescriptorsFromTo(descriptor, 0, 0, 1)
+	require.NoError(t, err)
+	script := addrDescs[0]
+
+	prevHash, err := chainhash.NewHashFromStr("1111111111111111111111111111111111111111111111111111111111111111")
+	require.NoError(t, err)
+	tx := wire.NewMsgTx(1)
+	tx.AddTxIn(wire.NewTxIn(wire.NewOutPoint(prevHash, 2), []byte{0x51}, [][]byte{{0x01, 0x02, 0x03}}))
+	tx.AddTxOut(wire.NewTxOut(123456789, script))
+
+	var buf bytes.Buffer
+	require.NoError(t, tx.Serialize(&buf))
+	return buf.Bytes(), tx, hex.EncodeToString(script)
 }

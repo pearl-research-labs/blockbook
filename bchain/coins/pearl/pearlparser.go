@@ -11,13 +11,15 @@ import (
 	"strings"
 
 	"github.com/juju/errors"
+	"github.com/pearl-research-labs/pearl/node/blockchain"
 	"github.com/pearl-research-labs/pearl/node/btcec/schnorr"
+	"github.com/pearl-research-labs/pearl/node/btcjson"
 	"github.com/pearl-research-labs/pearl/node/btcutil"
 	"github.com/pearl-research-labs/pearl/node/btcutil/hdkeychain"
 	"github.com/pearl-research-labs/pearl/node/chaincfg"
 	"github.com/pearl-research-labs/pearl/node/txscript"
+	"github.com/pearl-research-labs/pearl/node/wire"
 	"github.com/trezor/blockbook/bchain"
-	"github.com/trezor/blockbook/common"
 )
 
 // PearlParser is a minimal Bitcoin-type parser backed by pearl/node libs.
@@ -25,7 +27,7 @@ import (
 // AddressDescriptor is the output script bytes (same convention as other BTC-type parsers in Blockbook).
 type PearlParser struct {
 	*bchain.BaseParser
-	params    *chaincfg.Params
+	Params    *chaincfg.Params
 	xpubMagic uint32
 }
 
@@ -48,68 +50,89 @@ func NewPearlParser(chainName string, c *Configuration) *PearlParser {
 			BlockAddressesToKeep: c.BlockAddressesToKeep,
 			AmountDecimalPoint:   8,
 		},
-		params:    p,
+		Params:    p,
 		xpubMagic: c.XPubMagic,
 	}
 }
 
-func (p *PearlParser) SupportsVSize() bool { return false }
-
-func (p *PearlParser) MinimumCoinbaseConfirmations() int { return 0 }
-
-func (p *PearlParser) AmountToDecimalString(a *big.Int) string {
-	return p.BaseParser.AmountToDecimalString(a)
-}
-func (p *PearlParser) AmountToBigInt(n common.JSONNumber) (big.Int, error) {
-	return p.BaseParser.AmountToBigInt(n)
-}
-
-func (p *PearlParser) KeepBlockAddresses() int { return p.BaseParser.KeepBlockAddresses() }
-func (p *PearlParser) AmountDecimals() int     { return p.BaseParser.AmountDecimals() }
-func (p *PearlParser) UseAddressAliases() bool { return p.BaseParser.UseAddressAliases() }
-
-func (p *PearlParser) PackedTxidLen() int                    { return p.BaseParser.PackedTxidLen() }
-func (p *PearlParser) PackTxid(txid string) ([]byte, error)  { return p.BaseParser.PackTxid(txid) }
-func (p *PearlParser) UnpackTxid(buf []byte) (string, error) { return p.BaseParser.UnpackTxid(buf) }
-
-func (p *PearlParser) PackBlockHash(hash string) ([]byte, error) {
-	return p.BaseParser.PackBlockHash(hash)
-}
-func (p *PearlParser) UnpackBlockHash(buf []byte) (string, error) {
-	return p.BaseParser.UnpackBlockHash(buf)
-}
+func (p *PearlParser) SupportsVSize() bool { return true }
 
 func (p *PearlParser) ParseTxFromJson(msg json.RawMessage) (*bchain.Tx, error) {
-	return p.BaseParser.ParseTxFromJson(msg)
+	var raw btcjson.TxRawResult
+	if err := json.Unmarshal(msg, &raw); err != nil {
+		return nil, err
+	}
+	return p.TxFromTxRawResult(&raw)
 }
 
-func (p *PearlParser) ParseTx(b []byte) (*bchain.Tx, error)       { return p.BaseParser.ParseTx(b) }
-func (p *PearlParser) ParseBlock(b []byte) (*bchain.Block, error) { return p.BaseParser.ParseBlock(b) }
+func (p *PearlParser) ParseTx(b []byte) (*bchain.Tx, error) {
+	var msgTx wire.MsgTx
+	if err := msgTx.Deserialize(bytes.NewReader(b)); err != nil {
+		return nil, err
+	}
+	tx := p.TxFromMsgTx(&msgTx, true)
+	tx.Hex = hex.EncodeToString(b)
+	return &tx, nil
+}
+
+func (p *PearlParser) ParseBlock(b []byte) (*bchain.Block, error) {
+	var msgBlock wire.MsgBlock
+	if err := msgBlock.Deserialize(bytes.NewReader(b)); err != nil {
+		return nil, err
+	}
+	txs := make([]bchain.Tx, len(msgBlock.Transactions))
+	for i, tx := range msgBlock.Transactions {
+		txs[i] = p.TxFromMsgTx(tx, false)
+	}
+	header := msgBlock.BlockHeader()
+	return &bchain.Block{
+		BlockHeader: bchain.BlockHeader{
+			Prev: header.PrevBlock.String(),
+			Size: len(b),
+			Time: header.Timestamp.Unix(),
+		},
+		Txs: txs,
+	}, nil
+}
 
 func (p *PearlParser) PackTx(tx *bchain.Tx, height uint32, blockTime int64) ([]byte, error) {
-	return p.BaseParser.PackTx(tx, height, blockTime)
+	if tx.Hex == "" {
+		return nil, errors.New("missing raw Pearl transaction hex")
+	}
+	buf := make([]byte, 12+len(tx.Hex)/2)
+	binary.BigEndian.PutUint32(buf[:4], height)
+	binary.BigEndian.PutUint64(buf[4:12], uint64(blockTime))
+	n, err := hex.Decode(buf[12:], []byte(tx.Hex))
+	if err != nil {
+		return nil, err
+	}
+	return buf[:12+n], nil
 }
+
 func (p *PearlParser) UnpackTx(buf []byte) (*bchain.Tx, uint32, error) {
-	return p.BaseParser.UnpackTx(buf)
-}
-func (p *PearlParser) GetAddrDescForUnknownInput(tx *bchain.Tx, input int) bchain.AddressDescriptor {
-	return p.BaseParser.GetAddrDescForUnknownInput(tx, input)
+	if len(buf) < 12 {
+		return nil, 0, errors.New("short packed Pearl transaction")
+	}
+	height := binary.BigEndian.Uint32(buf[:4])
+	blockTime := int64(binary.BigEndian.Uint64(buf[4:12]))
+	tx, err := p.ParseTx(buf[12:])
+	if err != nil {
+		return nil, 0, err
+	}
+	tx.Blocktime = blockTime
+	tx.Time = blockTime
+	return tx, height, nil
 }
 
 func (p *PearlParser) GetAddrDescFromVout(output *bchain.Vout) (bchain.AddressDescriptor, error) {
 	if output.ScriptPubKey.Hex == "" {
-		// Log warning if scriptPubKey.hex is empty - this would cause indexing issues
 		return nil, nil
 	}
-	script, err := hex.DecodeString(output.ScriptPubKey.Hex)
-	if err != nil {
-		return nil, err
-	}
-	return script, nil
+	return hex.DecodeString(output.ScriptPubKey.Hex)
 }
 
 func (p *PearlParser) GetAddrDescFromAddress(address string) (bchain.AddressDescriptor, error) {
-	da, err := btcutil.DecodeAddress(address, p.params)
+	da, err := btcutil.DecodeAddress(address, p.Params)
 	if err != nil {
 		return nil, err
 	}
@@ -117,7 +140,7 @@ func (p *PearlParser) GetAddrDescFromAddress(address string) (bchain.AddressDesc
 }
 
 func (p *PearlParser) GetAddressesFromAddrDesc(addrDesc bchain.AddressDescriptor) ([]string, bool, error) {
-	sc, addrs, _, err := txscript.ExtractPkScriptAddrs(addrDesc, p.params)
+	sc, addrs, _, err := txscript.ExtractPkScriptAddrs(addrDesc, p.Params)
 	if err != nil {
 		return nil, false, err
 	}
@@ -125,9 +148,7 @@ func (p *PearlParser) GetAddressesFromAddrDesc(addrDesc bchain.AddressDescriptor
 	for i, a := range addrs {
 		rv[i] = a.EncodeAddress()
 	}
-	// Pearl only supports Taproot addresses
-	searchable := sc == txscript.WitnessV1TaprootTy
-	return rv, searchable, nil
+	return rv, sc == txscript.WitnessV1TaprootTy, nil
 }
 
 func (p *PearlParser) GetScriptFromAddrDesc(addrDesc bchain.AddressDescriptor) ([]byte, error) {
@@ -135,10 +156,116 @@ func (p *PearlParser) GetScriptFromAddrDesc(addrDesc bchain.AddressDescriptor) (
 }
 
 func (p *PearlParser) IsAddrDescIndexable(addrDesc bchain.AddressDescriptor) bool {
-	if len(addrDesc) == 0 || addrDesc[0] == txscript.OP_RETURN {
-		return false
+	return len(addrDesc) != 0 && addrDesc[0] != txscript.OP_RETURN
+}
+
+func (p *PearlParser) TxFromMsgTx(t *wire.MsgTx, parseAddresses bool) bchain.Tx {
+	vin := make([]bchain.Vin, len(t.TxIn))
+	coinbase := blockchain.IsCoinBaseTx(t)
+	for i, in := range t.TxIn {
+		if coinbase {
+			vin[i] = bchain.Vin{
+				Coinbase: hex.EncodeToString(in.SignatureScript),
+				Sequence: in.Sequence,
+			}
+			break
+		}
+		vin[i] = bchain.Vin{
+			Txid:     in.PreviousOutPoint.Hash.String(),
+			Vout:     in.PreviousOutPoint.Index,
+			Sequence: in.Sequence,
+			ScriptSig: bchain.ScriptSig{
+				Hex: hex.EncodeToString(in.SignatureScript),
+			},
+			Witness: in.Witness,
+		}
 	}
-	return true
+
+	vout := make([]bchain.Vout, len(t.TxOut))
+	for i, out := range t.TxOut {
+		addrs := []string{}
+		if parseAddresses {
+			addrs, _, _ = p.GetAddressesFromAddrDesc(out.PkScript)
+		}
+		var valueSat big.Int
+		valueSat.SetInt64(out.Value)
+		vout[i] = bchain.Vout{
+			ValueSat: valueSat,
+			N:        uint32(i),
+			ScriptPubKey: bchain.ScriptPubKey{
+				Hex:       hex.EncodeToString(out.PkScript),
+				Addresses: addrs,
+			},
+		}
+	}
+
+	return bchain.Tx{
+		Txid:     t.TxHash().String(),
+		Version:  t.Version,
+		LockTime: t.LockTime,
+		VSize:    blockchain.GetTransactionVsize(btcutil.NewTx(t)),
+		Vin:      vin,
+		Vout:     vout,
+	}
+}
+
+func (p *PearlParser) TxFromTxRawResult(raw *btcjson.TxRawResult) (*bchain.Tx, error) {
+	tx := &bchain.Tx{
+		Hex:           raw.Hex,
+		Txid:          raw.Txid,
+		Version:       int32(raw.Version),
+		LockTime:      raw.LockTime,
+		VSize:         int64(raw.Vsize),
+		Confirmations: uint32(raw.Confirmations),
+		Time:          raw.Time,
+		Blocktime:     raw.Blocktime,
+		Vin:           make([]bchain.Vin, len(raw.Vin)),
+		Vout:          make([]bchain.Vout, len(raw.Vout)),
+	}
+	for i := range raw.Vin {
+		vin := &raw.Vin[i]
+		tx.Vin[i] = bchain.Vin{
+			Coinbase: vin.Coinbase,
+			Txid:     vin.Txid,
+			Vout:     vin.Vout,
+			Sequence: vin.Sequence,
+		}
+		if vin.ScriptSig != nil {
+			tx.Vin[i].ScriptSig.Hex = vin.ScriptSig.Hex
+		}
+		if len(vin.Witness) > 0 {
+			tx.Vin[i].Witness = make([][]byte, len(vin.Witness))
+			for j, witness := range vin.Witness {
+				w, err := hex.DecodeString(witness)
+				if err != nil {
+					return nil, errors.Annotatef(err, "vin %d witness %d", i, j)
+				}
+				tx.Vin[i].Witness[j] = w
+			}
+		}
+	}
+	for i := range raw.Vout {
+		vout := &raw.Vout[i]
+		value, err := btcutil.NewAmount(vout.Value)
+		if err != nil {
+			return nil, err
+		}
+		var valueSat big.Int
+		valueSat.SetInt64(int64(value))
+		addresses := vout.ScriptPubKey.Addresses
+		if len(addresses) == 0 && vout.ScriptPubKey.Address != "" {
+			addresses = []string{vout.ScriptPubKey.Address}
+		}
+		tx.Vout[i] = bchain.Vout{
+			ValueSat: valueSat,
+			N:        vout.N,
+			ScriptPubKey: bchain.ScriptPubKey{
+				Hex:       vout.ScriptPubKey.Hex,
+				Addresses: addresses,
+			},
+		}
+	}
+	return tx, nil
 }
 
 var pearlXpubDescriptorRegex = regexp.MustCompile(`^tr\((?:\[[^\]]*\])?(?P<xpub>\w+)(?:/(?:\{(?P<changelist1>\d+(?:,\d+)*)\}|<(?P<changelist2>\d+(?:;\d+)*)>|(?P<change>\d+))/\*)?\)(?:#[[:alnum:]]+)?$`)
@@ -210,7 +337,7 @@ func parsePearlChangeIndexes(match []string, descriptor *bchain.XpubDescriptor) 
 
 func (p *PearlParser) isSupportedXpubVersion(extKey *hdkeychain.ExtendedKey) bool {
 	version := extKey.Version()
-	if bytes.Equal(version, p.params.HDPublicKeyID[:]) {
+	if bytes.Equal(version, p.Params.HDPublicKeyID[:]) {
 		return true
 	}
 	if p.xpubMagic != 0 {
@@ -233,7 +360,7 @@ func (p *PearlParser) addrDescFromExtKey(extKey *hdkeychain.ExtendedKey, descrip
 		return nil, err
 	}
 	taprootKey := txscript.ComputeTaprootKeyNoScript(pubKey)
-	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), p.params)
+	addr, err := btcutil.NewAddressTaproot(schnorr.SerializePubKey(taprootKey), p.Params)
 	if err != nil {
 		return nil, err
 	}
@@ -297,5 +424,5 @@ func (p *PearlParser) DerivationBasePath(descriptor *bchain.XpubDescriptor) (str
 	if extKey.Depth() != 3 {
 		return "unknown/" + account, nil
 	}
-	return "m/" + descriptor.Bip + "'/" + strconv.Itoa(int(p.params.HDCoinType)) + "'/" + account, nil
+	return "m/" + descriptor.Bip + "'/" + strconv.Itoa(int(p.Params.HDCoinType)) + "'/" + account, nil
 }

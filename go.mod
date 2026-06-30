@@ -22,7 +22,7 @@ require (
 	github.com/martinboehm/bchutil v0.0.0-20190104112650-6373f11b6efe
 	github.com/martinboehm/btcd v0.0.0-20221101112928-408689e15809
 	github.com/martinboehm/btcutil v0.0.0-20211010173611-6ef1889c1819
-	github.com/pearl-research-labs/pearl v0.0.0-20260501074019-daff5aad2747
+	github.com/pearl-research-labs/pearl v0.0.0-20260629083149-fff6a0366b3d
 	github.com/pebbe/zmq4 v1.2.1
 	github.com/pirk/ecashaddr-converter v0.0.0-20220121162910-c6cb45163b29
 	github.com/pirk/ecashutil v0.0.0-20220124103933-d37f548d249e
@@ -46,8 +46,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.20.0 // indirect
 	github.com/btcsuite/btclog v1.0.0 // indirect
-	github.com/btcsuite/go-socks v0.0.0-20170105172521-4720035b7bfd // indirect
-	github.com/btcsuite/websocket v0.0.0-20150119174127-31079b680792 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/consensys/gnark-crypto v0.18.1 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
