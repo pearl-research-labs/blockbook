@@ -148,7 +148,10 @@ func (p *PearlParser) GetAddressesFromAddrDesc(addrDesc bchain.AddressDescriptor
 	for i, a := range addrs {
 		rv[i] = a.EncodeAddress()
 	}
-	return rv, sc == txscript.WitnessV1TaprootTy, nil
+	// Taproot (v1) and P2MR (v2, BIP 360) are Pearl's spendable, searchable
+	// address types; OP_RETURN / non-standard scripts carry no searchable address.
+	searchable := sc == txscript.WitnessV1TaprootTy || sc == txscript.WitnessV2MerkleRootTy
+	return rv, searchable, nil
 }
 
 func (p *PearlParser) GetScriptFromAddrDesc(addrDesc bchain.AddressDescriptor) ([]byte, error) {

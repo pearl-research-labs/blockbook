@@ -62,6 +62,34 @@ func TestPearlParser_XpubDerivation(t *testing.T) {
 	assert.True(t, strings.HasPrefix(addrs[0], "prl1p"), "want Pearl Taproot address, got %q", addrs[0])
 }
 
+// TestPearlParser_P2MRAddress verifies witness-v2 (P2MR / Pay-to-Merkle-Root)
+// support both directions using the reference test vector from docs/p2mr.md: the
+// OP_2 <32-byte root> script must decode to a searchable prl1z… address, and that
+// address must re-encode to the same script.
+func TestPearlParser_P2MRAddress(t *testing.T) {
+	parser := NewPearlParser("main", &Configuration{XPubMagic: testXPubMagic})
+
+	const (
+		address = "prl1zqu04ax80tw03rs0v90rel24a77z722yyrdum43fcdvdtfgug4svquahpxa"
+		script  = "5220071f5e98ef5b9f11c1ec2bc79faabdf785e528841b79bac5386b1ab4a388ac18"
+	)
+	spk, err := hex.DecodeString(script)
+	require.NoError(t, err)
+
+	// scriptPubKey -> address
+	addrs, searchable, err := parser.GetAddressesFromAddrDesc(spk)
+	require.NoError(t, err)
+	assert.True(t, searchable, "P2MR output should be searchable")
+	require.Len(t, addrs, 1)
+	assert.Equal(t, address, addrs[0])
+	assert.True(t, strings.HasPrefix(addrs[0], "prl1z"), "P2MR mainnet address should start with prl1z")
+
+	// address -> scriptPubKey
+	got, err := parser.GetAddrDescFromAddress(address)
+	require.NoError(t, err)
+	assert.Equal(t, spk, []byte(got))
+}
+
 func TestPearlParser_XpubDescriptor(t *testing.T) {
 	parser := NewPearlParser("main", &Configuration{XPubMagic: testXPubMagic})
 	xpub := testPearlXpub(t)
