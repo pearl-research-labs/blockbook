@@ -307,7 +307,7 @@ func (d *PearlRPC) GetBestBlockHeight() (uint32, error) {
 func (d *PearlRPC) GetBlockHash(height uint32) (string, error) {
 	var hash string
 	if err := d.call(btcjson.NewGetBlockHashCmd(int64(height)), &hash); err != nil {
-		return "", err
+		return "", mapPearlBlockError(err)
 	}
 	return hash, nil
 }
@@ -316,7 +316,7 @@ func (d *PearlRPC) GetBlockHeader(hash string) (*bchain.BlockHeader, error) {
 	verbose := true
 	var header btcjson.GetBlockHeaderVerboseResult
 	if err := d.call(btcjson.NewGetBlockHeaderCmd(hash, &verbose), &header); err != nil {
-		return nil, err
+		return nil, mapPearlBlockError(err)
 	}
 	return &bchain.BlockHeader{
 		Hash:          header.Hash,
@@ -332,7 +332,7 @@ func (d *PearlRPC) GetBlockInfo(hash string) (*bchain.BlockInfo, error) {
 	verbosity := 1
 	var block btcjson.GetBlockVerboseResult
 	if err := d.call(btcjson.NewGetBlockCmd(hash, &verbosity), &block); err != nil {
-		return nil, err
+		return nil, mapPearlBlockError(err)
 	}
 	return &bchain.BlockInfo{
 		BlockHeader: bchain.BlockHeader{
@@ -438,7 +438,7 @@ func (d *PearlRPC) GetBlockRaw(hash string) (string, error) {
 	verbosity := 0
 	var raw string
 	if err := d.call(btcjson.NewGetBlockCmd(hash, &verbosity), &raw); err != nil {
-		return "", err
+		return "", mapPearlBlockError(err)
 	}
 	return raw, nil
 }
@@ -558,8 +558,15 @@ func mapPearlTxError(err error) error {
 }
 
 func mapPearlBlockError(err error) error {
-	if rpcErr, ok := err.(*btcjson.RPCError); ok && rpcErr.Code == btcjson.ErrRPCBlockNotFound {
-		return bchain.ErrBlockNotFound
+	if rpcErr, ok := err.(*btcjson.RPCError); ok {
+		// -5 "Block not found" (unknown hash) and the out-of-range height error
+		// both mean "no such block", which resyncIndex/connectBlocks expect as the
+		// bchain.ErrBlockNotFound sentinel. Match out-of-range by message: the node
+		// reuses code -1 for other conditions (e.g. "Command unimplemented"), so the
+		// code alone is not specific enough.
+		if rpcErr.Code == btcjson.ErrRPCBlockNotFound || rpcErr.Message == "Block number out of range" {
+			return bchain.ErrBlockNotFound
+		}
 	}
 	return err
 }
