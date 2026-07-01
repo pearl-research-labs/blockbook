@@ -99,14 +99,15 @@ func (p *PearlParser) PackTx(tx *bchain.Tx, height uint32, blockTime int64) ([]b
 	if tx.Hex == "" {
 		return nil, errors.New("missing raw Pearl transaction hex")
 	}
-	buf := make([]byte, 12+len(tx.Hex)/2)
-	binary.BigEndian.PutUint32(buf[:4], height)
-	binary.BigEndian.PutUint64(buf[4:12], uint64(blockTime))
-	n, err := hex.Decode(buf[12:], []byte(tx.Hex))
+	raw, err := hex.DecodeString(tx.Hex)
 	if err != nil {
 		return nil, err
 	}
-	return buf[:12+n], nil
+	buf := make([]byte, 12+len(raw))
+	binary.BigEndian.PutUint32(buf[:4], height)
+	binary.BigEndian.PutUint64(buf[4:12], uint64(blockTime))
+	copy(buf[12:], raw)
+	return buf, nil
 }
 
 func (p *PearlParser) UnpackTx(buf []byte) (*bchain.Tx, uint32, error) {
