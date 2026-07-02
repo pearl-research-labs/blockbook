@@ -103,11 +103,11 @@ func (p *PearlParser) PackTx(tx *bchain.Tx, height uint32, blockTime int64) ([]b
 	if err != nil {
 		return nil, err
 	}
-	buf := make([]byte, 12+len(raw))
-	binary.BigEndian.PutUint32(buf[:4], height)
-	binary.BigEndian.PutUint64(buf[4:12], uint64(blockTime))
-	copy(buf[12:], raw)
-	return buf, nil
+	// Built with append: no explicit allocation-size arithmetic on the input length,
+	// which CodeQL's allocation-size-overflow check would flag.
+	buf := binary.BigEndian.AppendUint32(nil, height)
+	buf = binary.BigEndian.AppendUint64(buf, uint64(blockTime))
+	return append(buf, raw...), nil
 }
 
 func (p *PearlParser) UnpackTx(buf []byte) (*bchain.Tx, uint32, error) {
