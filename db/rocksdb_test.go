@@ -1750,7 +1750,7 @@ func TestRocksDB_packTxIndexes_unpackTxIndexes(t *testing.T) {
 }
 
 // setupRocksDBWithExtendedIndex is like setupRocksDB but lets the caller choose
-// the extendedIndex layout; used by TestGetTxAddressesOutput to cover both forms.
+// the extendedIndex layout.
 func setupRocksDBWithExtendedIndex(t *testing.T, p bchain.BlockChainParser, extendedIndex bool) *RocksDB {
 	t.Helper()
 	tmp, err := os.MkdirTemp("", "testdb")
