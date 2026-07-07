@@ -1,15 +1,5 @@
-## Blockbook runtime image — environment-independent.
-##
-## Like upstream, this is a single image for all networks: it carries only the
-## blockbook binary and its static assets. The blockchaincfg (coin params + RPC
-## endpoint/creds) is provided at run time via `-blockchaincfg=<path>` by
-## whatever spawns the container (e.g. a helm chart mounting it), not baked in.
-##
-## The Makefile's `build` target produces only the builder image and the binary
-## (no runnable image), so this thin runtime layer lives here. It is assembled
-## by .github/workflows/release-image.yml from a small context:
-##   - blockbook  (the built binary, from build/blockbook)
-##   - static/    (static web assets)
+# Runtime image: the binary + static assets on top of the build image.
+# Config is passed at run time via -blockchaincfg, so one image serves any network.
 
 FROM blockbook-build:latest
 

@@ -1,21 +1,6 @@
 name: Release Image
 
-# Builds the environment-independent Blockbook container image from this
-# checkout and pushes a multi-arch (amd64 + arm64) image to this repo's GHCR
-# (ghcr.io/<owner>/blockbook). Manual only — a release is an explicit,
-# human-triggered action.
-#
-# Like upstream, it is a single image for all networks: the blockchaincfg is
-# supplied at run time (-blockchaincfg), never baked in. Consumers pin the
-# short-sha tag; :latest tracks the most recent release.
-#
-# Each arch builds natively (amd64 on ubuntu-latest, arm64 on ubuntu-24.04-arm)
-# because the binary is CGO/RocksDB and cross-compiling is fragile; the per-arch
-# images are pushed by digest and combined into one manifest by the merge job.
-#
-# One-time setup: after the first push, make the GHCR `blockbook` package
-# public (Packages -> blockbook -> Package settings -> Change visibility) so it
-# can be pulled without credentials.
+# Manually build and publish the multi-arch Blockbook image to GHCR.
 
 on:
   workflow_dispatch:
@@ -58,16 +43,11 @@ jobs:
         id: tag
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
-      # `make build` runs the blockbook-build image (RocksDB + Go toolchain) for
-      # the runner's native arch and compiles the binary into build/blockbook —
-      # the runtime Dockerfile's FROM.
       - name: Build blockbook binary
         run: make build BASE_IMAGE=debian:11
 
       - name: Assemble runtime build context
         run: |
-          # Standalone context so repo-level ignore rules can't exclude build/*
-          # and the runtime FROM resolves against the just-built builder image.
           rm -rf runtime_ctx && mkdir runtime_ctx
           cp build/docker/runtime/Dockerfile runtime_ctx/Dockerfile
           cp build/blockbook runtime_ctx/blockbook
@@ -76,10 +56,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
-          # `docker` driver shares the host daemon's image store, so the runtime
-          # stage's `FROM blockbook-build:latest` resolves against the image
-          # `make build` just created (the isolated docker-container driver
-          # would not see it). Each runner builds only its native arch.
+          # docker driver: the runtime FROM references the image `make build` left
+          # in the host store, which the default docker-container driver can't see.
           driver: docker
 
       - name: Log in to GHCR
@@ -98,8 +76,6 @@ jobs:
           file: runtime_ctx/Dockerfile
           platforms: ${{ matrix.platform }}
           provenance: false
-          # Push anonymous, arch-specific images by digest; the merge job
-          # assembles the tagged multi-arch manifest from their digests.
           outputs: type=image,name=${{ env.IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=${{ inputs.push }}
 
       - name: Export digest
@@ -108,7 +84,6 @@ jobs:
           DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           mkdir -p /tmp/digests
-          # Strip the sha256: prefix; the filename is just the hex digest.
           touch "/tmp/digests/${DIGEST#sha256:}"
 
       - name: Upload digest
@@ -143,12 +118,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Docker metadata (tags + labels)
+      - name: Docker metadata
         id: meta
         uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
         with:
           images: ${{ env.IMAGE_NAME }}
-          # 12-char short sha (the tag consumers pin) + latest.
           tags: |
             type=raw,value=${{ needs.build.outputs.sha }}
             type=raw,value=latest
@@ -159,10 +133,3 @@ jobs:
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
-
-      - name: Summary
-        run: |
-          {
-            echo "### Blockbook image (multi-arch: amd64 + arm64)"
-            echo "- image: \`${IMAGE_NAME}:${{ needs.build.outputs.sha }}\` (+ \`:latest\`)"
-          } >> "$GITHUB_STEP_SUMMARY"
