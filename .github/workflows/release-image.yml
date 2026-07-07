@@ -1,8 +1,6 @@
 name: Release Image
 
-# Multi-arch (amd64 + arm64) container image, pushed to this repo's GHCR.
-# Each arch builds natively: the CGO/RocksDB binary is impractical to
-# cross-compile. After the first push, make the GHCR package public.
+# Manually build and publish the multi-arch Blockbook image to GHCR.
 
 on:
   workflow_dispatch:
@@ -48,7 +46,6 @@ jobs:
       - name: Build blockbook binary
         run: make build BASE_IMAGE=debian:11
 
-      # Standalone context: .gitignore-style rules can't exclude build/*.
       - name: Assemble runtime build context
         run: |
           rm -rf runtime_ctx && mkdir runtime_ctx
@@ -59,7 +56,8 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
         with:
-          # host image store, so FROM blockbook-build:latest resolves
+          # docker driver: the runtime FROM references the image `make build` left
+          # in the host store, which the default docker-container driver can't see.
           driver: docker
 
       - name: Log in to GHCR
@@ -135,10 +133,3 @@ jobs:
           docker buildx imagetools create \
             $(jq -cr '.tags | map("-t " + .) | join(" ")' <<< "$DOCKER_METADATA_OUTPUT_JSON") \
             $(printf '${{ env.IMAGE_NAME }}@sha256:%s ' *)
-
-      - name: Summary
-        run: |
-          {
-            echo "### Blockbook image (amd64 + arm64)"
-            echo "- \`${IMAGE_NAME}:${{ needs.build.outputs.sha }}\` (+ \`:latest\`)"
-          } >> "$GITHUB_STEP_SUMMARY"
