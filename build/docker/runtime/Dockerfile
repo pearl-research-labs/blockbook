@@ -1,5 +1,6 @@
-# Runtime image: the binary + static assets on top of the build image.
-# Config is passed at run time via -blockchaincfg, so one image serves any network.
+# Blockbook runtime image: the binary + static assets, nothing else.
+# Network-independent — the blockchaincfg is supplied at run time via
+# -blockchaincfg. Context is assembled by .github/workflows/release-image.yml.
 
 FROM blockbook-build:latest
 
