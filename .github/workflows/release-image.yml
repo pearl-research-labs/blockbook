@@ -1,7 +1,7 @@
 name: Release Image
 
 # Builds the environment-independent Blockbook container image from this
-# checkout and pushes it to this fork's GHCR (ghcr.io/<owner>/blockbook).
+# checkout and pushes it to this repo's GHCR (ghcr.io/<owner>/blockbook).
 # Manual only — a release is an explicit, human-triggered action.
 #
 # Like upstream, it is a single image for all networks: the blockchaincfg is
@@ -9,8 +9,8 @@ name: Release Image
 # short-sha tag; :latest tracks the most recent release.
 #
 # One-time setup: after the first push, make the GHCR `blockbook` package
-# public (Packages -> blockbook -> Package settings -> Change visibility), so
-# clusters pull it with no imagePullSecret (matching pearld's public GHCR image).
+# public (Packages -> blockbook -> Package settings -> Change visibility) so it
+# can be pulled without credentials.
 
 on:
   workflow_dispatch:
