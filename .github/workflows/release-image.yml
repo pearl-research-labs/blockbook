@@ -5,8 +5,8 @@ name: Release Image
 # Manual only — a release is an explicit, human-triggered action.
 #
 # Like upstream, it is a single image for all networks: the blockchaincfg is
-# supplied at run time (-blockchaincfg), never baked in. Consumers pin the
-# short-sha tag; :latest tracks the most recent release.
+# supplied at run time (-blockchaincfg), never baked in. Tags come from
+# docker/metadata-action (short sha + latest).
 #
 # One-time setup: after the first push, make the GHCR `blockbook` package
 # public (Packages -> blockbook -> Package settings -> Change visibility) so it
@@ -43,6 +43,29 @@ jobs:
         id: tag
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
+      # `make build` runs the blockbook-build image (RocksDB + Go toolchain) and
+      # compiles the binary into build/blockbook — the runtime Dockerfile's FROM.
+      - name: Build blockbook binary
+        run: make build BASE_IMAGE=debian:11
+
+      - name: Assemble runtime build context
+        run: |
+          # Standalone context so repo-level ignore rules can't exclude build/*
+          # and the runtime FROM resolves against the just-built builder image.
+          rm -rf runtime_ctx && mkdir runtime_ctx
+          cp build/docker/runtime/Dockerfile runtime_ctx/Dockerfile
+          cp build/blockbook runtime_ctx/blockbook
+          cp -R static runtime_ctx/static
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+        with:
+          # `docker` driver shares the host daemon's image store, so the runtime
+          # stage's `FROM blockbook-build:latest` resolves against the image
+          # `make build` just created (the isolated docker-container driver
+          # would not see it). Single-arch only, which is all we build.
+          driver: docker
+
       - name: Log in to GHCR
         if: ${{ inputs.push }}
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
@@ -51,32 +74,23 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # `make build` builds the blockbook-build image (the runtime layer's FROM)
-      # and compiles the binary into build/blockbook.
-      - name: Build blockbook binary
-        run: make build BASE_IMAGE=debian:11
+      - name: Docker metadata (tags + labels)
+        id: meta
+        uses: docker/metadata-action@902fa8ec7d6ecbf8d84d538b9b233a880e428804 # v5.7.0
+        with:
+          images: ${{ env.IMAGE_NAME }}
+          # 12-char short sha (the tag consumers pin) + latest.
+          tags: |
+            type=raw,value=${{ steps.tag.outputs.sha }}
+            type=raw,value=latest
 
-      - name: Build runtime image
-        run: |
-          # Small assembled context so repo-level ignore rules can't exclude
-          # build/* and so the runtime FROM resolves against the just-built image.
-          rm -rf runtime_ctx && mkdir runtime_ctx
-          cp build/docker/runtime/Dockerfile runtime_ctx/Dockerfile
-          cp build/blockbook runtime_ctx/blockbook
-          cp -R static runtime_ctx/static
-          docker build --platform linux/amd64 -f runtime_ctx/Dockerfile \
-            -t "${IMAGE_NAME}:${{ steps.tag.outputs.sha }}" \
-            -t "${IMAGE_NAME}:latest" runtime_ctx
-
-      - name: Push image
-        if: ${{ inputs.push }}
-        run: docker push --all-tags "${IMAGE_NAME}"
-
-      - name: Summary
-        run: |
-          {
-            echo "### Blockbook image"
-            echo "- source: \`${GITHUB_REPOSITORY}\` @ \`${GITHUB_REF_NAME}\`"
-            echo "- image: \`${IMAGE_NAME}:${{ steps.tag.outputs.sha }}\` (+ \`:latest\`)"
-            echo "- pushed: ${{ inputs.push }}"
-          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Build and push
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: runtime_ctx
+          file: runtime_ctx/Dockerfile
+          platforms: linux/amd64
+          push: ${{ inputs.push }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          provenance: false
