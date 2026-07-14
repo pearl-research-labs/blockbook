@@ -32,6 +32,11 @@ const txsOnPage = 25
 const blocksOnPage = 50
 const mempoolTxsOnPage = 50
 const txsInAPI = 1000
+
+// details=txs materializes every tx on the page including all resolved vins;
+// on high fan-in addresses a 1000-tx page allocates gigabytes. Cap full-detail
+// pages harder than txids/txslight (which stay at txsInAPI).
+const txsDetailsInAPI = 100
 const maxWebsocketBlockPageSize = 10000
 const maxBlockFiltersRange = 10000
 const maxPageNumber = 1000000
@@ -1074,6 +1079,9 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 		accountDetails = api.AccountDetailsTxHistoryLight
 	case "txs":
 		accountDetails = api.AccountDetailsTxHistory
+	}
+	if accountDetails == api.AccountDetailsTxHistory && maxPageSize > txsDetailsInAPI {
+		maxPageSize = txsDetailsInAPI
 	}
 	page, pageSize = sanitizeAccountPagingParams(page, pageSize, maxPageSize, maxPageSize)
 	tokensToReturn := api.TokensToReturnNonzeroBalance
