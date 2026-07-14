@@ -33,6 +33,11 @@ const blocksOnPage = 50
 const mempoolTxsOnPage = 50
 const txsInAPI = 1000
 
+// Mempool entries are small (txid+time), so the API default and cap are more
+// generous than the explorer UI's mempoolTxsOnPage.
+const mempoolTxidsInAPI = 1000
+const maxMempoolTxidsPageSize = 10000
+
 // details=txs materializes every tx on the page including all resolved vins;
 // on high fan-in addresses a 1000-tx page allocates gigabytes. Cap full-detail
 // pages harder than txids/txslight (which stay at txsInAPI).
@@ -1735,6 +1740,16 @@ func (s *PublicServer) apiFeeStats(r *http.Request, apiVersion int) (interface{}
 		feeStats, err = s.api.GetFeeStats(r.URL.Path[i+1:])
 	}
 	return feeStats, err
+}
+
+// apiMempool is the machine-readable counterpart of the explorer /mempool page
+// (and of bitcoind's getrawmempool): a paged list of mempool txids with first
+// seen times, newest first.
+func (s *PublicServer) apiMempool(r *http.Request, apiVersion int) (interface{}, error) {
+	s.metrics.ExplorerViews.With(common.Labels{"action": "api-mempool"}).Inc()
+	page := validateIntParam(r.URL.Query().Get("page"), 0, 0, maxPageNumber)
+	pageSize := validateIntParam(r.URL.Query().Get("pageSize"), mempoolTxidsInAPI, 1, maxMempoolTxidsPageSize)
+	return s.api.GetMempool(page, pageSize)
 }
 
 type resultSendTransaction struct {

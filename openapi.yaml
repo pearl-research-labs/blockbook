@@ -1224,7 +1224,7 @@ components:
     PageSize:
       name: pageSize
       in: query
-      description: Number of history items per page. The default and maximum for REST account endpoints is 1000, except details=txs where the maximum is 100.
+      description: Number of history items per page. The default and maximum for REST account endpoints is 1000.
       schema:
         type: integer
         minimum: 1
@@ -1253,8 +1253,7 @@ components:
         tokenBalances returns token rows with balances.
         txids adds paged transaction ids.
         txslight adds limited transaction details from the index.
-        txs adds full transaction details; its page size is capped at 100
-        because fully materialized transactions are expensive to assemble.
+        txs adds full transaction details.
       schema:
         type: string
         default: txids
