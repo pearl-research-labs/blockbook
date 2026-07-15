@@ -239,6 +239,11 @@ metrics:
     name: blockbook_eth_alternative_mempool_cache_size
     type: gauge
     help: Transactions currently held in the alternative send-transaction mempool cache, sampled at the end of every reconcile cycle
+  eth_alternative_nonce_requests_total:
+    name: blockbook_eth_alternative_nonce_requests_total
+    type: counter_vec
+    help: eth_getTransactionCount lookups actually routed to the alternative send-transaction provider, labeled by result - success (the provider answered and its pending nonce was served, raised to the mempool floor) or error (the provider failed and the lookup fell back to the primary RPC). Only addresses that recently sent a private transaction through the provider are routed here (see useForNonces), so this counts the small gated subset, not every address request - a low, mostly-success rate confirms the gating is keeping the hot eth_getTransactionCount endpoint off the provider's rate quota
+    labels: [result]
   estimated_fee:
     name: blockbook_estimated_fee
     type: gauge_vec
@@ -400,6 +405,12 @@ metrics:
     name: blockbook_eth_block_base_fee
     type: gauge
     help: Base fee per gas of the most recently connected EVM block, in wei - divide by 1e9 for Gwei. The realized base fee from the block header (push path); compare with eth_eip1559_base_fee (the pull path's next-block projection) to see whether the projection tracks the chain. Updated once per connected block
+  rpc_sync_latency:
+    name: blockbook_rpc_sync_latency
+    type: histogram_vec
+    help: Blockbook-to-backend round-trip time for sync-internal RPC calls (eth_getBlockByHash, eth_getLogs, debug_traceBlockByHash, etc.), in milliseconds, labeled by method and whether the call failed. Typically sub-100ms; multi-second values mean an overloaded backend, and observations near 10-15s are trace_timeout/rpc_timeout expiries rather than real round trips
+    labels: [method, error]
+    buckets: [1, 5, 10, 25, 50, 100, 250, 500, 1000, 2000, 5000, 10000, 20000]
   eth_sync_rpc_errors:
     name: blockbook_eth_sync_rpc_errors
     type: counter_vec

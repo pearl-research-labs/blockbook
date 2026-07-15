@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"math/big"
 	"net/http"
@@ -30,11 +31,25 @@ const outChannelSize = 500
 const defaultTimeout = 60 * time.Second
 const unknownMethodLabel = "unknown"
 const maxWebsocketMessageBytes int64 = 4 * 1024 * 1024
-const maxWebsocketPendingRequests = 48
+// defaultWsPendingRequestsLimit is the default per-connection cap on
+// concurrently executing requests; override with
+// <network>_WS_PENDING_REQUESTS_LIMIT (0 disables), see docs/env.md.
+const defaultWsPendingRequestsLimit = 48
+
+// maxWebsocketMempoolFiltersResponses caps per-connection getMempoolFilters
+// requests over their whole lifecycle: the slot is acquired before the handler
+// computes the (potentially large) response and released only after the
+// response is written to the websocket (or drained on close). The point is to
+// bound the peak memory held in computed-but-unwritten filter responses, so the
+// cap deliberately covers compute, queueing, and write together; a client that
+// pipelines more than this many requests, or reads slower than it requests,
+// gets a mempool_filters_limit error instead of queueing further responses.
+const maxWebsocketMempoolFiltersResponses = 4
 const maxWebsocketActiveRequests = 2048
 const maxWebsocketEstimateFeeBlocks = 32
 const maxWebsocketSubscribeAddresses = 1000
 const maxWebsocketSubscribeAddressesWithNewBlockTxs = 100
+const maxWebsocketSubscribeFiatRatesTokens = 1000
 const websocketLogPreviewBytes = 256
 
 // allRates is a special "currency" parameter that means all available currencies
@@ -58,6 +73,7 @@ type websocketChannel struct {
 	conn                         *websocket.Conn
 	out                          chan *WsRes
 	pendingRequests              chan struct{}
+	mempoolFiltersSlots          chan struct{} // semaphore capping in-flight getMempoolFilters responses, see maxWebsocketMempoolFiltersResponses
 	ip                           string
 	ipKey                        string
 	blockKey                     string
@@ -105,7 +121,6 @@ type WebsocketServer struct {
 	fiatRatesTokenSubscriptions  map[*websocketChannel][]string
 	fiatRatesSubscriptionsLock   sync.Mutex
 	allowedOrigins               map[string]struct{}
-	allowedRpcCallTo             map[string]struct{}
 	trustedProxyPrefixes         []netip.Prefix
 	// cloudflarePrefixes gates trust of the CF-Connecting-* headers: when
 	// non-empty, those headers are honored only when the TCP peer is inside one
@@ -123,6 +138,9 @@ type WebsocketServer struct {
 	messageRateLimit  int
 	messageRateWindow time.Duration
 	ipBlockDuration   time.Duration
+	// pendingRequestsLimit caps how many requests a single connection may have
+	// executing concurrently before it is closed; 0 disables the cap.
+	pendingRequestsLimit int
 	// ipBlockEnabled gates the whole IP blocklist: true only when the rate limit can
 	// produce breaches (messageRateLimit > 0) and blocking is configured
 	// (ipBlockDuration > 0). When false, all block checks/sweeps are skipped.
@@ -175,13 +193,8 @@ func NewWebsocketServer(db *db.RocksDB, chain bchain.BlockChain, mempool bchain.
 	}
 	originEnvName := strings.ToUpper(is.GetNetwork()) + "_WS_ALLOWED_ORIGINS"
 	s.allowedOrigins = parseAllowedOrigins(originEnvName, os.Getenv(originEnvName))
-	envRpcCall := os.Getenv(strings.ToUpper(is.GetNetwork()) + "_ALLOWED_RPC_CALL_TO")
-	if envRpcCall != "" {
-		s.allowedRpcCallTo = make(map[string]struct{})
-		for _, c := range strings.Split(envRpcCall, ",") {
-			s.allowedRpcCallTo[strings.ToLower(c)] = struct{}{}
-		}
-		glog.Info("Support of rpcCall for these contracts: ", envRpcCall)
+	if err := initRpcCallAllowlists(db, is); err != nil {
+		return nil, err
 	}
 	clientIPCfg, err := readClientIPConfig(is.GetNetwork())
 	if err != nil {
@@ -202,6 +215,9 @@ func NewWebsocketServer(db *db.RocksDB, chain bchain.BlockChain, mempool bchain.
 		glog.Info("Cloudflare Pseudo-IPv4 mode enabled (", clientIPCfg.pseudoIPv6EnvName, "); CF-Connecting-IPv6 is honored as the client IP (requires Cloudflare \"Pseudo IPv4: Overwrite Headers\")")
 	}
 	if err := s.configureMessageRateLimit(is.GetNetwork()); err != nil {
+		return nil, err
+	}
+	if err := s.configurePendingRequestsLimit(is.GetNetwork()); err != nil {
 		return nil, err
 	}
 	if s.metrics != nil {
@@ -337,17 +353,23 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	conn.SetReadLimit(maxWebsocketMessageBytes)
+	// a nil channel disables the per-connection pending request cap
+	var pendingRequests chan struct{}
+	if s.pendingRequestsLimit > 0 {
+		pendingRequests = make(chan struct{}, s.pendingRequestsLimit)
+	}
 	c := &websocketChannel{
-		id:              atomic.AddUint64(&connectionCounter, 1),
-		conn:            conn,
-		out:             make(chan *WsRes, outChannelSize),
-		pendingRequests: make(chan struct{}, maxWebsocketPendingRequests),
-		ip:              ip,
-		ipKey:           ipKey,
-		blockKey:        bKey,
-		blockable:       blockable,
-		requestHeader:   r.Header,
-		alive:           true,
+		id:                  atomic.AddUint64(&connectionCounter, 1),
+		conn:                conn,
+		out:                 make(chan *WsRes, outChannelSize),
+		pendingRequests:     pendingRequests,
+		mempoolFiltersSlots: make(chan struct{}, maxWebsocketMempoolFiltersResponses),
+		ip:                  ip,
+		ipKey:               ipKey,
+		blockKey:            bKey,
+		blockable:           blockable,
+		requestHeader:       r.Header,
+		alive:               true,
 	}
 	if s.messageRateLimit > 0 {
 		c.messageRate = newConnMessageRate(s.messageRateWindow)
@@ -484,7 +506,7 @@ func (c *websocketChannel) CloseOut(reason string) (bool, string) {
 		//clean out
 		close(c.out)
 		for len(c.out) > 0 {
-			<-c.out
+			c.finalize(<-c.out)
 		}
 		return true, closeReason
 	}
@@ -496,20 +518,29 @@ func (c *websocketChannel) DataOut(data *WsRes) {
 	defer c.aliveLock.Unlock()
 	if c.alive {
 		if len(c.out) < outChannelSize-1 {
+			// Enqueued: ownership passes to the out pipeline, which finalizes it
+			// once written (outputLoop) or drained (CloseOut).
 			c.out <- data
-		} else {
-			glog.Warning("Channel ", c.id, " overflow, closing")
-			if c.closeReason == "" {
-				c.closeReason = "overflow"
-			}
-			// close the connection but do not call CloseOut - would call duplicate c.aliveLock.Lock
-			// CloseOut will be called because the closed connection will cause break in the inputLoop
-			c.conn.Close()
+			return
 		}
+		glog.Warning("Channel ", c.id, " overflow, closing")
+		if c.closeReason == "" {
+			c.closeReason = "overflow"
+		}
+		// close the connection but do not call CloseOut - would call duplicate c.aliveLock.Lock
+		// CloseOut will be called because the closed connection will cause break in the inputLoop
+		c.conn.Close()
 	}
+	// Not enqueued (overflow or dead connection): the response never reaches the
+	// out pipeline, so release any slot it held here.
+	c.finalize(data)
 }
 
 func (c *websocketChannel) acquireRequestSlot() bool {
+	if c.pendingRequests == nil {
+		// pending request limit disabled
+		return true
+	}
 	select {
 	case c.pendingRequests <- struct{}{}:
 		return true
@@ -519,7 +550,31 @@ func (c *websocketChannel) acquireRequestSlot() bool {
 }
 
 func (c *websocketChannel) releaseRequestSlot() {
+	if c.pendingRequests == nil {
+		return
+	}
 	<-c.pendingRequests
+}
+
+func (c *websocketChannel) acquireMempoolFiltersSlot() bool {
+	select {
+	case c.mempoolFiltersSlots <- struct{}{}:
+		return true
+	default:
+		return false
+	}
+}
+
+func (c *websocketChannel) releaseMempoolFiltersSlot() {
+	<-c.mempoolFiltersSlots
+}
+
+// finalize releases any resources a response held, exactly once
+func (c *websocketChannel) finalize(res *WsRes) {
+	if res != nil && res.release != nil {
+		res.release()
+		res.release = nil
+	}
 }
 
 func (s *WebsocketServer) inputLoop(c *websocketChannel) {
@@ -601,6 +656,7 @@ func (s *WebsocketServer) outputLoop(c *websocketChannel) {
 	for m := range c.out {
 		c.conn.SetWriteDeadline(time.Now().Add(defaultTimeout))
 		err := c.conn.WriteJSON(m)
+		c.finalize(m)
 		if err != nil {
 			glog.Error("Error sending message to ", c.id, ", ", err)
 			s.closeChannel(c, "write_error")
@@ -803,6 +859,9 @@ var requestHandlers = map[string]func(*WebsocketServer, *websocketChannel, *WsRe
 		if err != nil {
 			return nil, err
 		}
+		if len(r.Tokens) > maxWebsocketSubscribeFiatRatesTokens {
+			return nil, api.NewAPIError("tokens max "+strconv.Itoa(maxWebsocketSubscribeFiatRatesTokens), true)
+		}
 		r.Currency = strings.ToLower(r.Currency)
 
 		return s.subscribeFiatRates(c, &r, req)
@@ -843,6 +902,8 @@ var requestHandlers = map[string]func(*WebsocketServer, *websocketChannel, *WsRe
 func (s *WebsocketServer) onRequest(c *websocketChannel, req *WsReq) {
 	var err error
 	var data interface{}
+	// release is non-nil while this request holds a rate-capped endpoint slot.
+	var release func()
 	f, ok := requestHandlers[req.Method]
 	methodLabel := req.Method
 	if !ok {
@@ -859,9 +920,14 @@ func (s *WebsocketServer) onRequest(c *websocketChannel, req *WsReq) {
 		// nil data means no response
 		if data != nil {
 			c.DataOut(&WsRes{
-				ID:   req.ID,
-				Data: data,
+				ID:      req.ID,
+				Data:    data,
+				release: release,
 			})
+			release = nil // ownership handed to the response
+		}
+		if release != nil {
+			release() // no response was produced — free the slot now
 		}
 		s.metrics.WebsocketPendingRequests.With(common.Labels{"method": methodLabel}).Dec()
 	}()
@@ -871,6 +937,17 @@ func (s *WebsocketServer) onRequest(c *websocketChannel, req *WsReq) {
 		s.metrics.WebsocketReqDuration.With(common.Labels{"method": methodLabel}).Observe(float64(time.Since(t)) / 1e3) // in microseconds
 	}()
 	if ok {
+		if req.Method == "getMempoolFilters" {
+			if !c.acquireMempoolFiltersSlot() {
+				e := resultError{}
+				e.Error.Message = "mempool_filters_limit"
+				data = e
+				s.metrics.WebsocketRequests.With(common.Labels{"method": methodLabel, "status": "failure"}).Inc()
+				glog.Warning("Client ", c.id, " exceeded getMempoolFilters response limit, ", c.ip)
+				return
+			}
+			release = c.releaseMempoolFiltersSlot
+		}
 		data, err = f(s, c, req)
 		if err == nil {
 			glog.V(1).Info("Client ", c.id, " onRequest ", req.Method, " success")
@@ -1201,12 +1278,64 @@ func (s *WebsocketServer) getBlockFiltersBatch(r *WsBlockFiltersBatchReq) (res i
 	}, nil
 }
 
-func (s *WebsocketServer) rpcCall(r *WsRpcCallReq) (*WsRpcCallRes, error) {
-	if s.allowedRpcCallTo != nil {
-		_, ok := s.allowedRpcCallTo[strings.ToLower(r.To)]
-		if !ok {
-			return nil, errors.New("Not supported")
+// evmCallSelector extracts the 4-byte function selector from hex-encoded EVM
+// calldata as lowercase hex without the 0x prefix. It validates the full
+// calldata hex (odd length or non-hex characters fail closed) but decodes
+// only the first 4 bytes (8 hex chars) so that arbitrarily long calldata
+// does not cause a large allocation that is then discarded.
+func evmCallSelector(data string) (string, bool) {
+	if len(data) < 10 || data[0] != '0' || (data[1] != 'x' && data[1] != 'X') {
+		return "", false
+	}
+	s := data[2:]
+	if len(s)&1 == 1 {
+		return "", false
+	}
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] >= '0' && s[i] <= '9':
+		case s[i] >= 'a' && s[i] <= 'f':
+		case s[i] >= 'A' && s[i] <= 'F':
+		default:
+			return "", false
 		}
+	}
+	b, err := hex.DecodeString(s[:8])
+	if err != nil {
+		return "", false
+	}
+	return hex.EncodeToString(b), true
+}
+
+// rpcCallAllowed reports whether a rpcCall request passes the allowlists. With
+// no allowlist configured rpcCall is unrestricted; otherwise the call must
+// target an allowed address or invoke an allowed method selector. The snapshot
+// is nil only when initRpcCallAllowlists has not run (bare test servers);
+// NewWebsocketServer and NewInternalServer fail construction when they cannot
+// publish one.
+func (s *WebsocketServer) rpcCallAllowed(r *WsRpcCallReq) bool {
+	a := s.is.GetRpcCallAllowlists()
+	if a == nil || (a.To == nil && a.Methods == nil) {
+		return true
+	}
+	if a.To != nil {
+		if _, ok := a.To[strings.ToLower(r.To)]; ok {
+			return true
+		}
+	}
+	if a.Methods != nil {
+		if selector, ok := evmCallSelector(r.Data); ok {
+			if _, ok := a.Methods[selector]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *WebsocketServer) rpcCall(r *WsRpcCallReq) (*WsRpcCallRes, error) {
+	if !s.rpcCallAllowed(r) {
+		return nil, errors.New("Not supported")
 	}
 	data, err := s.chain.EthereumTypeRpcCall(r.Data, r.To, r.From)
 	if err != nil {

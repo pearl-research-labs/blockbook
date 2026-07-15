@@ -67,6 +67,7 @@ type Metrics struct {
 	EthAlternativeMempoolEvents       *prometheus.CounterVec   `metric:"eth_alternative_mempool_reconciliation_events_total"`
 	EthAlternativeMempoolTxResidence  *prometheus.HistogramVec `metric:"eth_alternative_mempool_tx_residence_seconds"`
 	EthAlternativeMempoolCacheSize    prometheus.Gauge         `metric:"eth_alternative_mempool_cache_size"`
+	EthAlternativeNonceRequests       *prometheus.CounterVec   `metric:"eth_alternative_nonce_requests_total"`
 	EstimatedFee                      *prometheus.GaugeVec     `metric:"estimated_fee"`
 	AvgBlockPeriod                    prometheus.Gauge         `metric:"avg_block_period"`
 	SyncBlockStats                    *prometheus.GaugeVec     `metric:"sync_block_stats"`
@@ -102,6 +103,7 @@ type Metrics struct {
 	EthEip1559FeeSource               *prometheus.CounterVec   `metric:"eth_eip1559_fee_source_total"`
 	EthBlockGasUsedRatio              prometheus.Gauge         `metric:"eth_block_gas_used_ratio"`
 	EthBlockBaseFee                   prometheus.Gauge         `metric:"eth_block_base_fee"`
+	RPCSyncLatency                    *prometheus.HistogramVec `metric:"rpc_sync_latency"`
 	EthSyncRpcErrors                  *prometheus.CounterVec   `metric:"eth_sync_rpc_errors"`
 }
 

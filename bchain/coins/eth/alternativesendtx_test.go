@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"io"
+	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -12,6 +13,9 @@ import (
 	"time"
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
+	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
+	"github.com/ethereum/go-ethereum/crypto"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/trezor/blockbook/bchain"
 	"github.com/trezor/blockbook/common"
@@ -205,7 +209,7 @@ func TestAlternativeSendTxProviderHandleMempoolTransactionFetchesFromAnyProvider
 	provider.mempoolTxs = make(map[string]storedTx)
 	provider.urls = append(provider.urls, knownServer.URL)
 
-	if _, err := provider.handleMempoolTransaction(testAlternativeTxID); err != nil {
+	if _, err := provider.handleMempoolTransaction(testAlternativeTxID, 0); err != nil {
 		t.Fatalf("handleMempoolTransaction() error = %v", err)
 	}
 	if _, found := provider.mempoolTxs[testAlternativeTxID]; !found {
@@ -219,7 +223,7 @@ func TestAlternativeSendTxProviderHandleMempoolTransactionSkipsEmptyTransaction(
 	provider := newTestAlternativeSendTxProvider(server.URL, &removed)
 	provider.mempoolTxs = make(map[string]storedTx)
 
-	if _, err := provider.handleMempoolTransaction(testAlternativeTxID); err == nil {
+	if _, err := provider.handleMempoolTransaction(testAlternativeTxID, 0); err == nil {
 		t.Fatal("handleMempoolTransaction() error = nil, want ErrTxNotFound")
 	}
 	if _, found := provider.mempoolTxs[testAlternativeTxID]; found {
@@ -233,7 +237,7 @@ func TestAlternativeSendTxProviderHandleMempoolTransactionSkipsTransactionWithou
 	provider := newTestAlternativeSendTxProvider(server.URL, &removed)
 	provider.mempoolTxs = make(map[string]storedTx)
 
-	if _, err := provider.handleMempoolTransaction(testAlternativeTxID); err == nil {
+	if _, err := provider.handleMempoolTransaction(testAlternativeTxID, 0); err == nil {
 		t.Fatal("handleMempoolTransaction() error = nil, want ErrTxNotFound")
 	}
 	if _, found := provider.mempoolTxs[testAlternativeTxID]; found {
@@ -625,7 +629,7 @@ func TestAlternativeSendTxProviderRBFReplacementObservesMetrics(t *testing.T) {
 		provider.RemoveTransaction(txid)
 	}
 
-	if _, err := provider.handleMempoolTransaction(testAlternativeTxID); err != nil {
+	if _, err := provider.handleMempoolTransaction(testAlternativeTxID, 0); err != nil {
 		t.Fatalf("handleMempoolTransaction: %v", err)
 	}
 
@@ -822,4 +826,299 @@ func TestAlternativeSendTxProviderGetNonces(t *testing.T) {
 			t.Fatal("expected fatal error on batch transport failure")
 		}
 	})
+}
+
+// signedTestTx builds a signed raw transaction with a throwaway key and returns its hex
+// encoding together with the sender address the key derives to.
+func signedTestTx(t *testing.T) (string, ethcommon.Address) {
+	t.Helper()
+	key, err := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	if err != nil {
+		t.Fatalf("HexToECDSA() error = %v", err)
+	}
+	to := ethcommon.HexToAddress("0x3333333333333333333333333333333333333333")
+	tx, err := types.SignNewTx(key, types.LatestSignerForChainID(big.NewInt(1)), &types.LegacyTx{
+		Nonce:    1,
+		GasPrice: big.NewInt(1),
+		Gas:      21000,
+		To:       &to,
+		Value:    big.NewInt(0),
+	})
+	if err != nil {
+		t.Fatalf("SignNewTx() error = %v", err)
+	}
+	raw, err := tx.MarshalBinary()
+	if err != nil {
+		t.Fatalf("MarshalBinary() error = %v", err)
+	}
+	return hexutil.Encode(raw), crypto.PubkeyToAddress(key.PublicKey)
+}
+
+func TestAlternativeSendTxProviderUseForNonces(t *testing.T) {
+	recent := ethcommon.HexToAddress("0x2222222222222222222222222222222222222222")
+	expired := ethcommon.HexToAddress("0x3333333333333333333333333333333333333333")
+	unknown := ethcommon.HexToAddress("0x4444444444444444444444444444444444444444")
+	provider := &AlternativeSendTxProvider{
+		mempoolTxsTimeout: time.Hour,
+		recentSenders: map[ethcommon.Address]recentSender{
+			recent:  {time: time.Now()},
+			expired: {time: time.Now().Add(-2 * time.Hour)},
+		},
+	}
+
+	if !provider.useForNonces(recent) {
+		t.Error("recent sender not routed to the alternative provider")
+	}
+	if provider.useForNonces(unknown) {
+		t.Error("unknown address routed to the alternative provider")
+	}
+	if provider.useForNonces(expired) {
+		t.Error("expired sender routed to the alternative provider")
+	}
+	if _, found := provider.recentSenders[expired]; found {
+		t.Error("expired sender not evicted on lookup")
+	}
+}
+
+func TestAlternativeSendTxProviderSendRecordsSender(t *testing.T) {
+	rawTx, sender := signedTestTx(t)
+	// callHttpStringResult dials a fresh client per call, so its first request always has id 1
+	sendTxResponse := `{"jsonrpc":"2.0","id":1,"result":"` + testAlternativeTxID + `"}`
+
+	t.Run("successful send records the decoded sender", func(t *testing.T) {
+		server := newAlternativeTxProviderTestServer(t, sendTxResponse)
+		// recentSenders left nil to also cover the lazy initialization on write
+		provider := &AlternativeSendTxProvider{urls: []string{server.URL}, mempoolTxsTimeout: time.Hour, rpcTimeout: time.Second}
+
+		if _, err := provider.SendRawTransaction(rawTx); err != nil {
+			t.Fatalf("SendRawTransaction() error = %v", err)
+		}
+		if !provider.useForNonces(sender) {
+			t.Error("sender not routed to the alternative provider after a successful send")
+		}
+		if s := provider.recentSenders[sender]; s.url != server.URL {
+			t.Errorf("recorded accepting url = %q, want %q", s.url, server.URL)
+		}
+	})
+
+	t.Run("failed send records nothing", func(t *testing.T) {
+		provider := &AlternativeSendTxProvider{urls: []string{"http://127.0.0.1:1"}, mempoolTxsTimeout: time.Hour, rpcTimeout: time.Second}
+
+		if _, err := provider.SendRawTransaction(rawTx); err == nil {
+			t.Fatal("expected error from unreachable provider")
+		}
+		if provider.useForNonces(sender) {
+			t.Error("sender recorded despite failed send")
+		}
+	})
+
+	t.Run("undecodable transaction records nothing", func(t *testing.T) {
+		server := newAlternativeTxProviderTestServer(t, sendTxResponse)
+		provider := &AlternativeSendTxProvider{urls: []string{server.URL}, mempoolTxsTimeout: time.Hour, rpcTimeout: time.Second}
+
+		if _, err := provider.SendRawTransaction("0xdeadbeef"); err != nil {
+			t.Fatalf("SendRawTransaction() error = %v", err)
+		}
+		if len(provider.recentSenders) != 0 {
+			t.Errorf("recentSenders has %d entries, want 0 after undecodable raw tx", len(provider.recentSenders))
+		}
+	})
+
+	t.Run("nonce reads follow the accepting provider", func(t *testing.T) {
+		// urls[0] is unreachable: the broadcast succeeds only through the second provider, so
+		// nonce reads for the sender must go there too - urls[0] never saw the transaction.
+		// The nonce server answers eth_sendRawTransaction via the empty tag and
+		// eth_getTransactionCount via the "pending" tag.
+		server := newNonceRPCServer(t, map[string]string{"": testAlternativeTxID, "pending": "0x9"}, nil)
+		provider := &AlternativeSendTxProvider{
+			urls:              []string{"http://127.0.0.1:1", server.URL},
+			mempoolTxsTimeout: time.Hour,
+			rpcTimeout:        time.Second,
+		}
+
+		if _, err := provider.SendRawTransaction(rawTx); err != nil {
+			t.Fatalf("SendRawTransaction() error = %v", err)
+		}
+		pending, _, _, err := provider.getNonces(sender, false)
+		if err != nil {
+			t.Fatalf("getNonces() error = %v", err)
+		}
+		if pending != 9 {
+			t.Errorf("pending = %d, want 9 from the provider that accepted the send", pending)
+		}
+		if got := server.callCount("pending"); got != 1 {
+			t.Errorf("accepting provider queried %d times for pending, want 1", got)
+		}
+	})
+
+	t.Run("batched nonce read follows the accepting provider", func(t *testing.T) {
+		// withConfirmed=true exercises the batch branch of getNonces, which dials the url
+		// itself instead of going through callHttpStringResult - it must pick the accepting
+		// provider the same way as the pending-only branch
+		server := newNonceRPCServer(t, map[string]string{"": testAlternativeTxID, "pending": "0x9", "latest": "0x5"}, nil)
+		provider := &AlternativeSendTxProvider{
+			urls:              []string{"http://127.0.0.1:1", server.URL},
+			mempoolTxsTimeout: time.Hour,
+			rpcTimeout:        time.Second,
+		}
+
+		if _, err := provider.SendRawTransaction(rawTx); err != nil {
+			t.Fatalf("SendRawTransaction() error = %v", err)
+		}
+		pending, confirmed, confirmedOK, err := provider.getNonces(sender, true)
+		if err != nil {
+			t.Fatalf("getNonces() error = %v", err)
+		}
+		if pending != 9 || confirmed != 5 || !confirmedOK {
+			t.Errorf("got (pending=%d confirmed=%d ok=%v), want (9 5 true) from the provider that accepted the send", pending, confirmed, confirmedOK)
+		}
+	})
+
+	t.Run("send sweeps expired senders", func(t *testing.T) {
+		server := newAlternativeTxProviderTestServer(t, sendTxResponse)
+		stale := ethcommon.HexToAddress("0x5555555555555555555555555555555555555555")
+		provider := &AlternativeSendTxProvider{
+			urls:              []string{server.URL},
+			mempoolTxsTimeout: time.Hour,
+			rpcTimeout:        time.Second,
+			recentSenders:     map[ethcommon.Address]recentSender{stale: {time: time.Now().Add(-2 * time.Hour)}},
+		}
+
+		if _, err := provider.SendRawTransaction(rawTx); err != nil {
+			t.Fatalf("SendRawTransaction() error = %v", err)
+		}
+		if _, found := provider.recentSenders[stale]; found {
+			t.Error("expired sender not swept on send")
+		}
+		if _, found := provider.recentSenders[sender]; !found {
+			t.Error("new sender not recorded")
+		}
+	})
+}
+
+func TestAlternativeSendTxProviderRemoveTransactionReleasesSender(t *testing.T) {
+	sender := ethcommon.HexToAddress("0x2222222222222222222222222222222222222222")
+	cachedTx := func(nonce string, gen uint64) storedTx {
+		return storedTx{
+			tx: &bchain.RpcTransaction{
+				Hash:         testAlternativeTxID,
+				From:         "0x2222222222222222222222222222222222222222",
+				AccountNonce: nonce,
+			},
+			time: uint32(time.Now().Unix()),
+			gen:  gen,
+		}
+	}
+	makeProvider := func(senderGen uint64, txs map[string]storedTx) *AlternativeSendTxProvider {
+		return &AlternativeSendTxProvider{
+			fetchMempoolTx:    true,
+			mempoolTxsTimeout: time.Hour,
+			mempoolTxs:        txs,
+			recentSenders:     map[ethcommon.Address]recentSender{sender: {time: time.Now(), gen: senderGen}},
+		}
+	}
+
+	t.Run("evicting the last cached tx releases the sender", func(t *testing.T) {
+		provider := makeProvider(1, map[string]storedTx{testAlternativeTxID: cachedTx("0x1", 1)})
+
+		provider.RemoveTransaction(testAlternativeTxID)
+
+		if provider.useForNonces(sender) {
+			t.Error("sender still routed to the alternative provider after its last cached tx settled")
+		}
+	})
+
+	t.Run("another cached tx from the sender keeps the entry", func(t *testing.T) {
+		provider := makeProvider(2, map[string]storedTx{
+			testAlternativeTxID:       cachedTx("0x1", 1),
+			testAlternativeSecondTxID: cachedTx("0x2", 2),
+		})
+
+		provider.RemoveTransaction(testAlternativeTxID)
+
+		if !provider.useForNonces(sender) {
+			t.Error("sender released while another of its txs is still cached")
+		}
+	})
+
+	t.Run("a newer send since the evicted tx keeps the entry", func(t *testing.T) {
+		// the sender submitted again after the evicted tx was cached (possibly without a cache
+		// entry of its own, e.g. when the post-send fetch-back failed) - the entry must survive.
+		// The generation counter orders the sends precisely, so this holds even when both sends
+		// landed within the same wall-clock second.
+		provider := makeProvider(2, map[string]storedTx{testAlternativeTxID: cachedTx("0x1", 1)})
+
+		provider.RemoveTransaction(testAlternativeTxID)
+
+		if !provider.useForNonces(sender) {
+			t.Error("sender released although a newer private send may still be pending")
+		}
+	})
+
+	t.Run("unknown txid releases nothing", func(t *testing.T) {
+		provider := makeProvider(1, map[string]storedTx{testAlternativeTxID: cachedTx("0x1", 1)})
+
+		provider.RemoveTransaction("0xdoesnotexist")
+
+		if !provider.useForNonces(sender) {
+			t.Error("sender released by removal of an unknown txid")
+		}
+	})
+}
+
+func TestAlternativeSendTxProviderHandleMempoolTransactionStampsOwnGeneration(t *testing.T) {
+	// The cached entry must carry the generation of ITS OWN submission, not the sender's
+	// current generation: the fetch-back is a network round-trip during which a concurrent
+	// send can bump the sender's generation. Simulated here: transaction A (generation 1)
+	// finishes its slow fetch-back after a concurrent transaction B (generation 2) was
+	// registered but left no cache entry because B's own fetch-back failed. Stamping A with
+	// generation 2 would make A's eviction release the sender's routing while B is still
+	// privately pending.
+	server := newAlternativeTxProviderTestServer(t, testAlternativeKnownTxResponse)
+	sender := ethcommon.HexToAddress("0x2222222222222222222222222222222222222222")
+	provider := &AlternativeSendTxProvider{
+		urls:              []string{server.URL},
+		fetchMempoolTx:    true,
+		mempoolTxsTimeout: time.Hour,
+		rpcTimeout:        time.Second,
+		mempoolTxs:        map[string]storedTx{},
+		recentSenders:     map[ethcommon.Address]recentSender{sender: {time: time.Now(), gen: 2}},
+	}
+
+	if _, err := provider.handleMempoolTransaction(testAlternativeTxID, 1); err != nil {
+		t.Fatalf("handleMempoolTransaction() error = %v", err)
+	}
+	if got := provider.mempoolTxs[testAlternativeTxID].gen; got != 1 {
+		t.Errorf("cached tx generation = %d, want 1 (the generation of its own submission)", got)
+	}
+
+	// evicting A must keep the routing alive for the uncached, possibly still pending B
+	provider.RemoveTransaction(testAlternativeTxID)
+
+	if !provider.useForNonces(sender) {
+		t.Error("sender routing released although a newer private send (generation 2) may still be pending")
+	}
+}
+
+func TestAlternativeSendTxProviderPendingNonceFloor(t *testing.T) {
+	sender := ethcommon.HexToAddress("0x2222222222222222222222222222222222222222")
+	provider := &AlternativeSendTxProvider{
+		mempoolTxs: map[string]storedTx{
+			"0x01": {tx: &bchain.RpcTransaction{From: "0x2222222222222222222222222222222222222222", AccountNonce: "0x4"}},
+			"0x02": {tx: &bchain.RpcTransaction{From: "0x2222222222222222222222222222222222222222", AccountNonce: "0x7"}},
+			"0x03": {tx: &bchain.RpcTransaction{From: "0x2222222222222222222222222222222222222222", AccountNonce: "0xZZ"}}, // unparsable, skipped
+			"0x04": {tx: &bchain.RpcTransaction{From: "0x3333333333333333333333333333333333333333", AccountNonce: "0x9"}},
+		},
+	}
+
+	floor, found := provider.pendingNonceFloor(sender)
+	if !found {
+		t.Fatal("no floor found for sender with cached txs")
+	}
+	if floor != 8 {
+		t.Errorf("floor = %d, want 8 (highest cached nonce 0x7 + 1)", floor)
+	}
+	if _, found := provider.pendingNonceFloor(ethcommon.HexToAddress("0x4444444444444444444444444444444444444444")); found {
+		t.Error("floor found for address without cached txs")
+	}
 }

@@ -49,11 +49,12 @@ type tronUnfrozenV2Entry struct {
 }
 
 type tronGetAccountResponse struct {
-	Address         string                `json:"address,omitempty"`
-	FrozenV2        []tronFrozenV2Entry   `json:"frozenV2,omitempty"`
-	UnfrozenV2      []tronUnfrozenV2Entry `json:"unfrozenV2,omitempty"`
-	Votes           []tronTxVote          `json:"votes,omitempty"`
-	AccountResource struct {
+	Address            string                `json:"address,omitempty"`
+	FrozenV2           []tronFrozenV2Entry   `json:"frozenV2,omitempty"`
+	UnfrozenV2         []tronUnfrozenV2Entry `json:"unfrozenV2,omitempty"`
+	Votes              []tronTxVote          `json:"votes,omitempty"`
+	LatestWithdrawTime *int64                `json:"latest_withdraw_time,omitempty"`
+	AccountResource    struct {
 		DelegatedFrozenV2BalanceForEnergy int64 `json:"delegated_frozenV2_balance_for_energy"`
 	} `json:"account_resource,omitempty"`
 	DelegatedFrozenV2BalanceForBandwidth int64 `json:"delegated_frozenV2_balance_for_bandwidth"`
@@ -68,6 +69,7 @@ type tronGetBlockResponse struct {
 }
 
 type tronGetBlockHeaderResponse struct {
+	BlockID     string `json:"blockID"`
 	BlockHeader struct {
 		RawData struct {
 			Number *uint64 `json:"number"`
@@ -257,6 +259,11 @@ func tronBuildStakingInfo(accountResp *tronGetAccountResponse, resourceResp *tro
 	delegatedEnergy := max(accountResp.AccountResource.DelegatedFrozenV2BalanceForEnergy, 0)
 	delegatedBandwidth := max(accountResp.DelegatedFrozenV2BalanceForBandwidth, 0)
 
+	latestWithdrawTime := int64(0)
+	if accountResp.LatestWithdrawTime != nil && *accountResp.LatestWithdrawTime > 0 {
+		latestWithdrawTime = *accountResp.LatestWithdrawTime / 1000
+	}
+
 	return &bchain.TronStakingInfo{
 		StakedBalance:             stakedBalance.String(),
 		StakedBalanceEnergy:       stakedEnergy.String(),
@@ -268,6 +275,7 @@ func tronBuildStakingInfo(accountResp *tronGetAccountResponse, resourceResp *tro
 		UnclaimedReward:           strconv.FormatInt(unclaimedReward, 10),
 		DelegatedBalanceEnergy:    strconv.FormatInt(delegatedEnergy, 10),
 		DelegatedBalanceBandwidth: strconv.FormatInt(delegatedBandwidth, 10),
+		LatestWithdrawTime:        latestWithdrawTime,
 	}
 }
 
@@ -465,6 +473,32 @@ func (b *TronRPC) requestBlockByID(ctx context.Context, blockHash string, isSoli
 		return nil, err
 	}
 	return &resp, nil
+}
+
+// requestBlockHashByNum resolves a block hash by height via the solidity node's
+// /walletsolidity/getblock endpoint. It is only called for already-solidified
+// heights (see GetBlockHash), so the lookup always targets the solidity node.
+func (b *TronRPC) requestBlockHashByNum(ctx context.Context, blockNum uint32) (string, error) {
+	req := map[string]any{
+		"id_or_num": strconv.FormatUint(uint64(blockNum), 10),
+		"detail":    false,
+	}
+	http := b.getLookupHTTPClient(true)
+	var resp tronGetBlockHeaderResponse
+	if err := http.Request(ctx, "/walletsolidity/getblock", req, &resp); err != nil {
+		return "", err
+	}
+	if resp.BlockHeader.RawData.Number == nil {
+		return "", errors.Errorf("Tron getblock returned missing block_header.raw_data.number for height %d", blockNum)
+	}
+	if *resp.BlockHeader.RawData.Number != uint64(blockNum) {
+		return "", errors.Errorf("Tron getblock returned height %d, want %d", *resp.BlockHeader.RawData.Number, blockNum)
+	}
+	hash := strip0xPrefix(resp.BlockID)
+	if hash == "" {
+		return "", errors.Errorf("Tron getblock returned empty blockID for height %d", blockNum)
+	}
+	return hash, nil
 }
 
 func (b *TronRPC) requestLatestSolidifiedBlockHeight(ctx context.Context) (uint64, error) {

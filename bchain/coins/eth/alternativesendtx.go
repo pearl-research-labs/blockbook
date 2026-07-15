@@ -10,6 +10,7 @@ import (
 
 	ethcommon "github.com/ethereum/go-ethereum/common"
 	"github.com/ethereum/go-ethereum/common/hexutil"
+	"github.com/ethereum/go-ethereum/core/types"
 	"github.com/ethereum/go-ethereum/rpc"
 	"github.com/golang/glog"
 	"github.com/juju/errors"
@@ -20,6 +21,15 @@ import (
 type storedTx struct {
 	tx   *bchain.RpcTransaction
 	time uint32
+	gen  uint64 // send generation of the submission that created this entry, orders it against later sends
+}
+
+// recentSender records when an address last successfully sent a transaction through an
+// alternative provider and which provider URL accepted it.
+type recentSender struct {
+	time time.Time
+	url  string
+	gen  uint64 // monotonic send generation, orders the send against cached-tx evictions
 }
 
 const alternativeMempoolTxCheckPeriod = time.Minute
@@ -39,6 +49,9 @@ type AlternativeSendTxProvider struct {
 	watchMempoolTxsOnce          sync.Once
 	stop                         chan struct{}
 	stopOnce                     sync.Once
+	recentSenders                map[ethcommon.Address]recentSender
+	sendGeneration               uint64 // counts successful sends; guarded by recentSendersMux
+	recentSendersMux             sync.Mutex
 }
 
 // NewAlternativeSendTxProvider creates a new alternative send tx provider if enabled
@@ -58,6 +71,7 @@ func NewAlternativeSendTxProvider(network string, rpcTimeout int, mempoolTxsTime
 		rpcTimeout:        time.Duration(rpcTimeout) * time.Second,
 		mempoolTxsTimeout: mempoolTxsTimeout,
 		mempoolTxs:        make(map[string]storedTx),
+		recentSenders:     make(map[ethcommon.Address]recentSender),
 		metrics:           metrics,
 		stop:              make(chan struct{}),
 	}
@@ -85,10 +99,14 @@ func (p *AlternativeSendTxProvider) SetupMempool(mempool *bchain.MempoolEthereum
 func (p *AlternativeSendTxProvider) SendRawTransaction(hex string) (string, error) {
 	var txid string
 	var retErr error
+	var acceptedURL string
 
 	for i := range p.urls {
 		r, err := p.callHttpStringResult(p.urls[i], "eth_sendRawTransaction", hex)
 		glog.Infof("eth_sendRawTransaction to %s, txid %s", p.urls[i], r)
+		if err == nil && acceptedURL == "" {
+			acceptedURL = p.urls[i]
+		}
 		// set success return value; or error only if there was no previous success
 		if err == nil || len(txid) == 0 {
 			txid = r
@@ -96,15 +114,152 @@ func (p *AlternativeSendTxProvider) SendRawTransaction(hex string) (string, erro
 		}
 	}
 
+	var gen uint64
+	// keyed on acceptedURL rather than retErr, so registration does not silently depend on
+	// callHttpStringResult never returning an empty result without an error
+	if acceptedURL != "" {
+		gen = p.registerSuccessfulSend(hex, acceptedURL)
+	}
+
 	if p.onlyAlternative && p.fetchMempoolTx {
-		p.handleMempoolTransaction(txid)
+		p.handleMempoolTransaction(txid, gen)
 	}
 
 	return txid, retErr
 }
 
-// handleMempoolTransaction handles the transaction when using only alternative providers
-func (p *AlternativeSendTxProvider) handleMempoolTransaction(txid string) (string, error) {
+// alternativeTxSender recovers the sender address from a raw transaction hex. The chain id
+// needed to derive the sender is taken from the transaction itself.
+func alternativeTxSender(rawTxHex string) (ethcommon.Address, error) {
+	var tx types.Transaction
+	if err := tx.UnmarshalBinary(ethcommon.FromHex(rawTxHex)); err != nil {
+		return ethcommon.Address{}, err
+	}
+	return types.Sender(types.LatestSignerForChainID(tx.ChainId()), &tx)
+}
+
+// registerSuccessfulSend records the sender of a transaction accepted by an alternative
+// provider so that useForNonces routes the sender's nonce lookups to that provider while
+// the transaction may still be pending there. A broadcast succeeds if ANY configured URL
+// accepts it, so the accepting URL is recorded too - it is the one provider guaranteed to
+// know the transaction (see nonceURL). Expired entries are swept on the way; the map only
+// ever holds senders of the last mempoolTxsTimeout window, so the sweep is cheap.
+// It returns the send generation assigned to this submission (0 when the sender cannot be
+// decoded); the caller must carry that exact value to the cache entry it creates for the
+// transaction, so that releaseRecentSender can order evictions against later sends.
+func (p *AlternativeSendTxProvider) registerSuccessfulSend(rawTxHex string, acceptedURL string) uint64 {
+	sender, err := alternativeTxSender(rawTxHex)
+	if err != nil {
+		glog.Warningf("cannot decode sender of transaction sent to alternative provider: %v", err)
+		return 0
+	}
+	now := time.Now()
+	p.recentSendersMux.Lock()
+	defer p.recentSendersMux.Unlock()
+	if p.recentSenders == nil {
+		p.recentSenders = make(map[ethcommon.Address]recentSender)
+	}
+	for addr, s := range p.recentSenders {
+		if now.Sub(s.time) > p.mempoolTxsTimeout {
+			delete(p.recentSenders, addr)
+		}
+	}
+	p.sendGeneration++
+	p.recentSenders[sender] = recentSender{time: now, url: acceptedURL, gen: p.sendGeneration}
+	return p.sendGeneration
+}
+
+// useForNonces reports whether nonce lookups for addr should be routed to the alternative
+// provider. Only addresses that recently (within mempoolTxsTimeout, the same horizon at
+// which Blockbook stops surfacing the tx as pending) sent a transaction through it can have
+// a pending transaction the primary RPC does not know about; for everybody else the primary
+// is authoritative and the provider round-trip is pure waste of its rate-limit quota.
+// Senders whose cached transactions have all settled are released before the timeout (see
+// releaseRecentSender). Accepted limitations: a restart wipes the map (exposure bounded by
+// mempoolTxsTimeout), a transaction pending longer than the timeout, and private
+// transactions submitted outside this Blockbook instance - which includes sends accepted
+// by another replica in a load-balanced deployment without request affinity (wallet
+// websocket flows are naturally sticky to one instance; see docs/env.md).
+func (p *AlternativeSendTxProvider) useForNonces(addr ethcommon.Address) bool {
+	p.recentSendersMux.Lock()
+	defer p.recentSendersMux.Unlock()
+	s, found := p.recentSenders[addr]
+	if !found {
+		return false
+	}
+	if time.Since(s.time) > p.mempoolTxsTimeout {
+		delete(p.recentSenders, addr)
+		return false
+	}
+	return true
+}
+
+// releaseRecentSender drops the sender's nonce-routing entry once its last cached
+// transaction left the alternative mempool cache (mined, superseded, replaced or timed
+// out), so address polling stops consuming the alternative provider's quota as soon as no
+// private transaction remains pending. The entry is kept when its send generation is newer
+// than the evicted transaction's: the sender submitted again after that transaction was
+// cached (even within the same wall-clock second) and the newer transaction may not have a
+// cache entry of its own (e.g. when the post-send fetch-back failed).
+// Residual risk, accepted: an UNCACHED send OLDER than the evicted transaction cannot be
+// represented and loses its routing with the release. It needs a failed fetch-back, and
+// mined evictions largely exclude it anyway - the sender's nonces are sequential, so an
+// older transaction cannot still be pending once a newer one mined.
+func (p *AlternativeSendTxProvider) releaseRecentSender(sender ethcommon.Address, evictedTxGen uint64) {
+	p.recentSendersMux.Lock()
+	defer p.recentSendersMux.Unlock()
+	s, found := p.recentSenders[sender]
+	if !found {
+		return
+	}
+	if s.gen > evictedTxGen {
+		return
+	}
+	delete(p.recentSenders, sender)
+}
+
+// pendingNonceFloor returns the lowest pending nonce consistent with the private
+// transactions the alternative mempool cache holds for addr (highest cached account nonce
+// + 1), and whether any such transaction exists. Blockbook exposes these cached txs as
+// pending, so reporting a pending nonce below the floor would contradict its own view and
+// lead a wallet to reuse the nonce of an in-flight private transaction.
+func (p *AlternativeSendTxProvider) pendingNonceFloor(addr ethcommon.Address) (uint64, bool) {
+	p.mempoolTxsMux.Lock()
+	defer p.mempoolTxsMux.Unlock()
+	var floor uint64
+	var found bool
+	for _, storedTx := range p.mempoolTxs {
+		if storedTx.tx == nil || ethcommon.HexToAddress(storedTx.tx.From) != addr {
+			continue
+		}
+		nonce, err := hexutil.DecodeUint64(storedTx.tx.AccountNonce)
+		if err != nil {
+			continue
+		}
+		if nonce+1 > floor {
+			floor = nonce + 1
+			found = true
+		}
+	}
+	return floor, found
+}
+
+// raiseToPendingFloor returns pending, raised to pendingNonceFloor(addr) when the cache
+// holds a higher-nonce private transaction for the address.
+func (p *AlternativeSendTxProvider) raiseToPendingFloor(addr ethcommon.Address, pending uint64) uint64 {
+	if floor, found := p.pendingNonceFloor(addr); found && floor > pending {
+		return floor
+	}
+	return pending
+}
+
+// handleMempoolTransaction handles the transaction when using only alternative providers.
+// gen is the send generation registerSuccessfulSend assigned to THIS submission - it must be
+// passed in rather than read from recentSenders here, because the fetch-back above is a
+// network round-trip during which a concurrent send from the same sender can bump the
+// sender's current generation; stamping the cache entry with that newer generation would let
+// its eviction release the sender's routing while the newer transaction is still pending.
+func (p *AlternativeSendTxProvider) handleMempoolTransaction(txid string, gen uint64) (string, error) {
 	tx, found, err := p.getTransactionFromProviders(txid)
 	if err != nil {
 		glog.Errorf("eth_getTransactionByHash from alternative providers returned error %v", err)
@@ -125,7 +280,7 @@ func (p *AlternativeSendTxProvider) handleMempoolTransaction(txid string) (strin
 			break
 		}
 	}
-	p.mempoolTxs[txid] = storedTx{tx: tx, time: uint32(time.Now().Unix())}
+	p.mempoolTxs[txid] = storedTx{tx: tx, time: uint32(time.Now().Unix()), gen: gen}
 	p.mempoolTxsMux.Unlock()
 
 	if rbfTxid != "" {
@@ -161,9 +316,7 @@ func (p *AlternativeSendTxProvider) GetTransaction(txid string) (*bchain.RpcTran
 
 	if found {
 		if time.Unix(int64(storedTx.time), 0).Before(time.Now().Add(-p.mempoolTxsTimeout)) {
-			p.mempoolTxsMux.Lock()
-			delete(p.mempoolTxs, txid)
-			p.mempoolTxsMux.Unlock()
+			p.RemoveTransaction(txid)
 			// the same staleness timeout the reconcile loop applies, just reached on the read path
 			// first; record it so the timeout counter and residence histogram do not undercount
 			// entries read after expiry but before the next reconcile cycle evicts them.
@@ -438,15 +591,35 @@ func (p *AlternativeSendTxProvider) removeMempoolTx(txid string) {
 	p.RemoveTransaction(txid)
 }
 
-// RemoveTransaction removes a transaction from alternative mempool cache
+// RemoveTransaction removes a transaction from alternative mempool cache. When the removed
+// transaction was the sender's last cached one, the sender's nonce-routing entry is released
+// as well (see releaseRecentSender) so address polling stops hitting the alternative provider
+// once nothing private remains pending.
 func (p *AlternativeSendTxProvider) RemoveTransaction(txid string) {
 	if !p.fetchMempoolTx {
 		return
 	}
 
 	p.mempoolTxsMux.Lock()
+	removedTx, found := p.mempoolTxs[txid]
 	delete(p.mempoolTxs, txid)
+	senderSettled := false
+	var sender ethcommon.Address
+	if found && removedTx.tx != nil && removedTx.tx.From != "" {
+		sender = ethcommon.HexToAddress(removedTx.tx.From)
+		senderSettled = true
+		for _, storedTx := range p.mempoolTxs {
+			if storedTx.tx != nil && ethcommon.HexToAddress(storedTx.tx.From) == sender {
+				senderSettled = false
+				break
+			}
+		}
+	}
 	p.mempoolTxsMux.Unlock()
+
+	if senderSettled {
+		p.releaseRecentSender(sender, removedTx.gen)
+	}
 }
 
 // UseOnlyAlternativeProvider returns true if only alternative providers should be used
@@ -489,18 +662,32 @@ func (p *AlternativeSendTxProvider) callHttpStringResult(url string, rpcMethod s
 	return result, nil
 }
 
-// getNonces returns the pending account nonce from the first configured alternative
-// provider, plus the confirmed (latest) nonce when withConfirmed is set. When both are
-// requested they are fetched in a single JSON-RPC batch round-trip; otherwise only the
-// pending nonce is requested. The confirmed nonce is best-effort: a failed latest lookup
-// yields confirmedOK=false (not an error) so the caller can omit it. An error is returned
-// only when the required pending nonce cannot be obtained.
+// nonceURL returns the provider URL to use for addr's nonce lookup: the URL that accepted
+// the sender's most recent transaction when known (a broadcast succeeds if ANY configured
+// provider accepts it, so the first URL may never have seen the transaction), falling back
+// to the first configured URL.
+func (p *AlternativeSendTxProvider) nonceURL(addr ethcommon.Address) string {
+	p.recentSendersMux.Lock()
+	defer p.recentSendersMux.Unlock()
+	if s, found := p.recentSenders[addr]; found && s.url != "" {
+		return s.url
+	}
+	return p.urls[0]
+}
+
+// getNonces returns the pending account nonce from the alternative provider that accepted
+// the sender's most recent transaction (see nonceURL), plus the confirmed (latest) nonce
+// when withConfirmed is set. When both are requested they are fetched in a single JSON-RPC
+// batch round-trip; otherwise only the pending nonce is requested. The confirmed nonce is
+// best-effort: a failed latest lookup yields confirmedOK=false (not an error) so the caller
+// can omit it. An error is returned only when the required pending nonce cannot be obtained.
 func (p *AlternativeSendTxProvider) getNonces(addr ethcommon.Address, withConfirmed bool) (uint64, uint64, bool, error) {
 	if len(p.urls) == 0 {
 		return 0, 0, false, errors.New("no alternative provider url configured")
 	}
+	url := p.nonceURL(addr)
 	if !withConfirmed {
-		pendingHex, err := p.callHttpStringResult(p.urls[0], "eth_getTransactionCount", addr, "pending")
+		pendingHex, err := p.callHttpStringResult(url, "eth_getTransactionCount", addr, "pending")
 		if err != nil {
 			return 0, 0, false, err
 		}
@@ -512,7 +699,7 @@ func (p *AlternativeSendTxProvider) getNonces(addr ethcommon.Address, withConfir
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), p.rpcTimeout)
 	defer cancel()
-	client, err := rpc.DialContext(ctx, p.urls[0])
+	client, err := rpc.DialContext(ctx, url)
 	if err != nil {
 		return 0, 0, false, err
 	}

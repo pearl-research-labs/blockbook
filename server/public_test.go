@@ -1194,7 +1194,7 @@ func Test_WebsocketRejectsOversizedMessage(t *testing.T) {
 	t.Fatalf("unexpected websocket error after oversized message: %v", err)
 }
 
-func Test_WebsocketClosesWhenPendingRequestLimitExceeded(t *testing.T) {
+func testWebsocketPendingRequestLimit(t *testing.T, limit int) {
 	parser, chain := setupChain(t)
 
 	s, dbpath := setupPublicHTTPServer(parser, chain, t, false)
@@ -1203,7 +1203,7 @@ func Test_WebsocketClosesWhenPendingRequestLimitExceeded(t *testing.T) {
 
 	releaseRequests := make(chan struct{})
 	defer close(releaseRequests)
-	startedRequests := make(chan struct{}, maxWebsocketPendingRequests)
+	startedRequests := make(chan struct{}, limit)
 	originalPingHandler := requestHandlers["ping"]
 	requestHandlers["ping"] = func(s *WebsocketServer, c *websocketChannel, req *WsReq) (interface{}, error) {
 		startedRequests <- struct{}{}
@@ -1220,12 +1220,12 @@ func Test_WebsocketClosesWhenPendingRequestLimitExceeded(t *testing.T) {
 	ws := connectWebsocket(t, ts)
 	defer ws.Close()
 
-	for i := 0; i < maxWebsocketPendingRequests; i++ {
+	for i := 0; i < limit; i++ {
 		if err := ws.WriteJSON(websocketReq{ID: strconv.Itoa(i), Method: "ping"}); err != nil {
 			t.Fatal(err)
 		}
 	}
-	for i := 0; i < maxWebsocketPendingRequests; i++ {
+	for i := 0; i < limit; i++ {
 		select {
 		case <-startedRequests:
 		case <-time.After(2 * time.Second):
@@ -1249,6 +1249,17 @@ func Test_WebsocketClosesWhenPendingRequestLimitExceeded(t *testing.T) {
 	if errors.As(err, &netErr) && netErr.Timeout() {
 		t.Fatal("expected connection close after pending request limit was exceeded, got timeout")
 	}
+}
+
+func Test_WebsocketClosesWhenPendingRequestLimitExceeded(t *testing.T) {
+	testWebsocketPendingRequestLimit(t, defaultWsPendingRequestsLimit)
+}
+
+func Test_WebsocketPendingRequestLimitEnvOverride(t *testing.T) {
+	// the test coin sets no Network, so GetNetwork() falls back to the
+	// CoinShortcut FAKE
+	t.Setenv("FAKE_WS_PENDING_REQUESTS_LIMIT", "3")
+	testWebsocketPendingRequestLimit(t, 3)
 }
 
 var websocketTestsBitcoinType = []websocketTest{
@@ -2205,6 +2216,80 @@ func Test_WebsocketFiatRates_SubscribeBroadcastAndUnsubscribe(t *testing.T) {
 		},
 	})
 	assertNoWebsocketMessage(t, ws, 300*time.Millisecond)
+}
+
+func Test_WebsocketFiatRates_SubscribeTokensCap(t *testing.T) {
+	parser, chain := setupChain(t)
+	s, dbpath := setupPublicHTTPServer(parser, chain, t, false)
+	defer closeAndDestroyPublicServer(t, s, dbpath)
+	s.ConnectFullPublicInterface()
+	ts := httptest.NewServer(s.https.Handler)
+	defer ts.Close()
+
+	ws := connectWebsocket(t, ts)
+	defer ws.Close()
+
+	makeTokens := func(n int) []string {
+		tokens := make([]string, n)
+		for i := range tokens {
+			tokens[i] = "0xa4dd6bc15be95af55f0447555c8b6aa3088562f3"
+		}
+		return tokens
+	}
+
+	// Over the cap: the subscription is rejected with a public error and no
+	// token slice is retained for the connection.
+	if err := ws.WriteJSON(websocketReq{
+		ID:     "sub-over",
+		Method: "subscribeFiatRates",
+		Params: map[string]interface{}{
+			"currency": "USD",
+			"tokens":   makeTokens(maxWebsocketSubscribeFiatRatesTokens + 1),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	over := readWebsocketResponse(t, ws, time.Second)
+	if over.ID != "sub-over" {
+		t.Fatalf("unexpected response id: got %q, want %q", over.ID, "sub-over")
+	}
+	var overData struct {
+		Error struct {
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	if err := json.Unmarshal(over.Data, &overData); err != nil {
+		t.Fatal(err)
+	}
+	wantMsg := "tokens max " + strconv.Itoa(maxWebsocketSubscribeFiatRatesTokens)
+	if overData.Error.Message != wantMsg {
+		t.Fatalf("unexpected error message: got %q, want %q", overData.Error.Message, wantMsg)
+	}
+
+	// Exactly at the cap: the subscription succeeds.
+	if err := ws.WriteJSON(websocketReq{
+		ID:     "sub-at",
+		Method: "subscribeFiatRates",
+		Params: map[string]interface{}{
+			"currency": "USD",
+			"tokens":   makeTokens(maxWebsocketSubscribeFiatRatesTokens),
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	at := readWebsocketResponse(t, ws, time.Second)
+	if at.ID != "sub-at" {
+		t.Fatalf("unexpected response id: got %q, want %q", at.ID, "sub-at")
+	}
+	var atData struct {
+		Subscribed bool `json:"subscribed"`
+	}
+	if err := json.Unmarshal(at.Data, &atData); err != nil {
+		t.Fatal(err)
+	}
+	if !atData.Subscribed {
+		t.Fatalf("expected subscribed=true at the token cap, got false (data %s)", at.Data)
+	}
 }
 
 func Test_WebsocketFiatRates_GetCurrentFiatRates_TokenContractsCaseHandling_BitcoinType(t *testing.T) {

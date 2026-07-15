@@ -10,6 +10,7 @@ import (
 	"math/big"
 	"net/http"
 	"net/url"
+	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -393,6 +394,17 @@ func (b *EthereumRPC) observeEthSyncRpcError(method string, err error) {
 		return
 	}
 	b.metrics.EthSyncRpcErrors.With(common.Labels{"method": method, "status": ethSyncRpcErrStatus(err)}).Inc()
+}
+
+func (b *EthereumRPC) observeSyncRPCLatency(method string, start time.Time, err error) {
+	if b.metrics == nil {
+		return
+	}
+	errorLabel := ""
+	if err != nil {
+		errorLabel = "failure"
+	}
+	b.metrics.RPCSyncLatency.With(common.Labels{"method": method, "error": errorLabel}).Observe(float64(time.Since(start)) / 1e6)
 }
 
 // EnsureSameRPCHost validates both RPC URLs and logs a warning if hosts differ.
@@ -960,12 +972,17 @@ func (b *EthereumRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), b.Timeout)
 	defer cancel()
+	netStart := time.Now()
 	id, err := b.Client.NetworkID(ctx)
+	b.observeSyncRPCLatency("net_version", netStart, err)
 	if err != nil {
 		return nil, err
 	}
 	var ver string
-	if err := b.RPC.CallContext(ctx, &ver, "web3_clientVersion"); err != nil {
+	web3Start := time.Now()
+	err = b.RPC.CallContext(ctx, &ver, "web3_clientVersion")
+	b.observeSyncRPCLatency("web3_clientVersion", web3Start, err)
+	if err != nil {
 		return nil, err
 	}
 	rv := &bchain.ChainInfo{
@@ -996,7 +1013,9 @@ func (b *EthereumRPC) getBestHeader() (bchain.EVMHeader, error) {
 		var err error
 		ctx, cancel := context.WithTimeout(context.Background(), b.Timeout)
 		defer cancel()
+		headerStart := time.Now()
 		b.bestHeader, err = b.Client.HeaderByNumber(ctx, nil)
+		b.observeSyncRPCLatency("eth_getBlockByNumber", headerStart, err)
 		if err != nil {
 			b.bestHeader = nil
 			return nil, err
@@ -1363,6 +1382,7 @@ func (b *EthereumRPC) getBlockRaw(hash string, height uint32, fullTxs bool) (jso
 	var raw json.RawMessage
 	var err error
 	var method string
+	defer func(s time.Time) { b.observeSyncRPCLatency(method, s, err) }(time.Now())
 	if hash != "" {
 		if hash == "pending" {
 			method = "eth_getBlockByNumber"
@@ -1395,7 +1415,9 @@ func (b *EthereumRPC) processEventsForBlock(blockNumber string) (map[string][]*b
 	var logs []rpcLogWithTxHash
 	var ensRecords []bchain.AddressAliasRecord
 	var method = "eth_getLogs"
-	err := b.RPC.CallContext(ctx, &logs, method, map[string]interface{}{
+	var err error
+	defer func(s time.Time) { b.observeSyncRPCLatency(method, s, err) }(time.Now())
+	err = b.RPC.CallContext(ctx, &logs, method, map[string]interface{}{
 		"fromBlock": blockNumber,
 		"toBlock":   blockNumber,
 	})
@@ -1499,7 +1521,9 @@ func (b *EthereumRPC) getInternalDataForBlock(ctx context.Context, blockHash str
 		if b.ChainConfig.TraceTimeout != "" {
 			traceConfig["timeout"] = b.ChainConfig.TraceTimeout
 		}
+		traceStart := time.Now()
 		err := b.RPC.CallContext(ctx, &trace, "debug_traceBlockByHash", blockHash, traceConfig) // Use caller-provided ctx for timeout/cancel.
+		b.observeSyncRPCLatency("debug_traceBlockByHash", traceStart, err)
 		b.observeEthSyncRpcError("debug_traceBlockByHash", err)
 		if err != nil {
 			glog.Error("debug_traceBlockByHash block ", blockHash, ", error ", err)
@@ -1603,6 +1627,18 @@ func (b *EthereumRPC) GetBlock(hash string, height uint32) (*bchain.Block, error
 	logsCh := make(chan logsResult, 1)         // Buffered so send won't block if we return early.
 	internalCh := make(chan internalResult, 1) // Buffered to avoid goroutine leak on early return.
 	go func() {
+		// Defense-in-depth: processEventsForBlock/getEnsRecord parse attacker-controlled
+		// on-chain log data. This goroutine has no other recover() on its stack, so an
+		// unrecovered panic here would terminate the whole process and — because the
+		// block is not yet committed — crash-loop on restart. Recover into an error so
+		// block sync surfaces/handles it instead of the process dying.
+		defer func() {
+			if r := recover(); r != nil {
+				glog.Error("GetBlock: recovered from panic in processEventsForBlock: ", r)
+				debug.PrintStack()
+				logsCh <- logsResult{err: fmt.Errorf("recovered from panic in processEventsForBlock: %v", r)}
+			}
+		}()
 		logs, ens, err := b.processEventsForBlock(head.Number)
 		logsCh <- logsResult{logs: logs, ens: ens, err: err} // Send result without shared state.
 	}()
@@ -1704,6 +1740,77 @@ func (b *EthereumRPC) removeTransactionFromMempool(txid string) {
 	}
 }
 
+// callContextWithTimeout issues a single JSON-RPC call under its own fresh b.Timeout
+// deadline, so sequential calls in a recovery sequence do not share (and progressively
+// shrink) one deadline budget.
+func (b *EthereumRPC) callContextWithTimeout(result interface{}, method string, args ...interface{}) error {
+	ctx, cancel := context.WithTimeout(context.Background(), b.Timeout)
+	defer cancel()
+	return b.RPC.CallContext(ctx, result, method, args...)
+}
+
+// txFromBlockBody fetches the full block body and returns the transaction matching txid, or
+// nil if the fetch fails or the transaction is not present. This is the recovery fallback
+// used when the O(1) positional lookup is unavailable.
+func (b *EthereumRPC) txFromBlockBody(txid, blockHash string) *bchain.RpcTransaction {
+	raw, err := b.getBlockRaw(blockHash, 0, true)
+	if err != nil {
+		glog.Warningf("recoverMinedTransaction %s: getBlockRaw %s failed: %v", txid, blockHash, err)
+		return nil
+	}
+	var body rpcBlockTransactions
+	if err := json.Unmarshal(raw, &body); err != nil {
+		glog.Warningf("recoverMinedTransaction %s: decode block %s failed: %v", txid, blockHash, err)
+		return nil
+	}
+	for i := range body.Transactions {
+		if strings.EqualFold(body.Transactions[i].Hash, txid) {
+			return &body.Transactions[i]
+		}
+	}
+	return nil
+}
+
+// recoverMinedTransaction reconstructs a mined transaction that eth_getTransactionByHash
+// returned null because the backend pruned its tx-by-hash index (observed on QuikNode Base).
+// It looks the tx up by the receipt's (blockHash, transactionIndex) and returns it with the
+// receipt for reuse. Returns (nil, nil) when the tx is genuinely unknown or recovery fails,
+// so the caller yields ErrTxNotFound; recovery-lookup failures are logged, not propagated.
+func (b *EthereumRPC) recoverMinedTransaction(txid string) (*bchain.RpcTransaction, *bchain.RpcReceipt) {
+	// The receipt still works on such backends and carries the block hash and tx index;
+	// decode it in one pass (embedding RpcReceipt) so it can be reused for EthTxToTx.
+	var receipt struct {
+		bchain.RpcReceipt
+		BlockHash        string `json:"blockHash"`
+		TransactionIndex string `json:"transactionIndex"`
+	}
+	if err := b.callContextWithTimeout(&receipt, "eth_getTransactionReceipt", ethcommon.HexToHash(txid)); err != nil {
+		glog.Warningf("recoverMinedTransaction %s: eth_getTransactionReceipt failed: %v", txid, err)
+		return nil, nil
+	}
+	if receipt.BlockHash == "" {
+		// No receipt: the transaction is genuinely unknown to the backend.
+		return nil, nil
+	}
+	// Fast path: fetch the single tx by (blockHash, index) - an O(1), ~900x smaller lookup
+	// than scanning the whole block body. transactionIndex is already a hex quantity.
+	tx := &bchain.RpcTransaction{}
+	err := b.callContextWithTimeout(tx, "eth_getTransactionByBlockHashAndIndex", ethcommon.HexToHash(receipt.BlockHash), receipt.TransactionIndex)
+	if err == nil && strings.EqualFold(tx.Hash, txid) {
+		return tx, &receipt.RpcReceipt
+	}
+	if err != nil {
+		glog.Warningf("recoverMinedTransaction %s: eth_getTransactionByBlockHashAndIndex %s/%s failed, falling back to block body: %v", txid, receipt.BlockHash, receipt.TransactionIndex, err)
+	}
+	// Fallback for backends that prune tx-by-hash but do not serve the positional lookup (or
+	// returned an empty/mismatched result): scan the block body, as before the optimization.
+	if scanned := b.txFromBlockBody(txid, receipt.BlockHash); scanned != nil {
+		return scanned, &receipt.RpcReceipt
+	}
+	glog.Warningf("recoverMinedTransaction %s: not recoverable from block %s (index %s)", txid, receipt.BlockHash, receipt.TransactionIndex)
+	return nil, nil
+}
+
 // GetTransaction returns a transaction by the transaction ID.
 func (b *EthereumRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), b.Timeout)
@@ -1722,9 +1829,23 @@ func (b *EthereumRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 			return nil, err
 		}
 	}
+	// recoveredReceipt is set only when the transaction was reconstructed via the pruned-index
+	// fallback below; the mined branch reuses it instead of fetching the receipt again.
+	var recoveredReceipt *bchain.RpcReceipt
 	if *tx == (bchain.RpcTransaction{}) {
-		b.removeTransactionFromMempool(txid)
-		return nil, bchain.ErrTxNotFound
+		// eth_getTransactionByHash returned null. Some archive backends (observed on
+		// QuikNode Base) prune the transaction-by-hash index beyond a recent window
+		// while still serving block bodies and receipts, so a mined transaction older
+		// than that window is invisible to this call even though it is fully retained.
+		// Recover it from its receipt (which carries the block hash and index) before
+		// treating it as not found.
+		if recovered, receipt := b.recoverMinedTransaction(txid); recovered != nil {
+			tx = recovered
+			recoveredReceipt = receipt
+		} else {
+			b.removeTransactionFromMempool(txid)
+			return nil, bchain.ErrTxNotFound
+		}
 	}
 	var btx *bchain.Tx
 	if tx.BlockNumber == "" {
@@ -1751,9 +1872,13 @@ func (b *EthereumRPC) GetTransaction(txid string) (*bchain.Tx, error) {
 			return nil, errors.Annotatef(err, "txid %v", txid)
 		}
 		tx.BaseFeePerGas = ht.BaseFeePerGas
-		receipt, err := b.EthereumTypeGetTransactionReceipt(txid)
-		if err != nil {
-			return nil, errors.Annotatef(err, "txid %v", txid)
+		// Reuse the receipt already fetched during pruned-index recovery; otherwise fetch it.
+		receipt := recoveredReceipt
+		if receipt == nil {
+			receipt, err = b.EthereumTypeGetTransactionReceipt(txid)
+			if err != nil {
+				return nil, errors.Annotatef(err, "txid %v", txid)
+			}
 		}
 		n, err := ethNumber(tx.BlockNumber)
 		if err != nil {
@@ -1924,6 +2049,17 @@ func (b *EthereumRPC) observeEip1559FeeSource(source string) {
 	b.metrics.EthEip1559FeeSource.With(common.Labels{"source": source}).Inc()
 }
 
+// observeAlternativeNonceRequest records an eth_getTransactionCount lookup routed to the alternative
+// send-tx provider, labeled by result: success (provider answered) or error (provider failed and the
+// lookup fell back to the primary RPC). Only recent private senders are routed here (see useForNonces),
+// so this counts the gated subset rather than every address request.
+func (b *EthereumRPC) observeAlternativeNonceRequest(result string) {
+	if b.metrics == nil || b.metrics.EthAlternativeNonceRequests == nil {
+		return
+	}
+	b.metrics.EthAlternativeNonceRequests.With(common.Labels{"result": result}).Inc()
+}
+
 // eip1559BaseFeeMultiplier is the headroom applied to the projected base fee when deriving
 // maxFeePerGas for the on-chain EIP-1559 estimate (maxFeePerGas = multiplier*baseFee + tip).
 // 2x is the EIP-1559-standard buffer: it keeps a transaction mineable across ~6 consecutive full
@@ -1981,7 +2117,10 @@ func (b *EthereumRPC) EthereumTypeGetEip1559Fees() (*bchain.Eip1559Fees, error) 
 
 	hs, _ := json.Marshal(h)
 	baseFee, _ := hexutil.DecodeUint64(h.BaseFeePerGas[blocks-1])
-	fees.BaseFeePerGas = big.NewInt(int64(baseFee))
+	// SetUint64, not big.NewInt(int64(...)): base fee is wei and a value above math.MaxInt64
+	// (~9.22e18) would wrap negative on the int64 cast. Unreachable on mainnet today but possible
+	// on high-fee L2s. Matches the header path in attachBlockGas.
+	fees.BaseFeePerGas = new(big.Int).SetUint64(baseFee)
 	// We expose only baseFeePerGas here and deliberately do NOT add a separate "next block" base-fee
 	// field. eth_feeHistory returns one extra projected element beyond the requested range, but its
 	// meaning is backend-dependent: nodes with no distinct pending block (e.g. Erigon, which ethereum
@@ -2115,6 +2254,15 @@ func (b *EthereumRPC) EthereumTypeGetBalance(addrDesc bchain.AddressDescriptor) 
 // EthereumTypeGetNonces returns the pending account nonce and, only when withConfirmed
 // is set, the confirmed (latest) nonce.
 //
+// When an alternative send-tx provider is configured, the lookup is routed through it only
+// for addresses that recently sent a transaction via that provider (see useForNonces) —
+// those may have a pending transaction the primary RPC does not know about. All other
+// addresses go straight to the primary RPC so that the hottest API endpoint does not burn
+// the provider's rate-limit quota. Whenever a provider is configured, the pending answer -
+// whether from the provider or from the primary RPC - is raised to the floor implied by
+// the alternative mempool cache (see pendingNonceFloor) so it never contradicts
+// Blockbook's own pending view of the sender's private transactions.
+//
 // The pending nonce (eth_getTransactionCount at the "pending" tag) counts transactions
 // still queued in the mempool and is the next nonce the account will use; it is always
 // fetched and is required, so a failure to obtain it returns an error. The confirmed nonce
@@ -2128,18 +2276,33 @@ func (b *EthereumRPC) EthereumTypeGetBalance(addrDesc bchain.AddressDescriptor) 
 func (b *EthereumRPC) EthereumTypeGetNonces(addrDesc bchain.AddressDescriptor, withConfirmed bool) (uint64, uint64, bool, error) {
 	ethAddress := ethcommon.BytesToAddress(addrDesc)
 
-	if b.alternativeSendTxProvider != nil {
+	if b.alternativeSendTxProvider != nil && b.alternativeSendTxProvider.useForNonces(ethAddress) {
 		pending, confirmed, confirmedOK, err := b.alternativeSendTxProvider.getNonces(ethAddress, withConfirmed)
 		if err == nil {
-			return pending, confirmed, confirmedOK, nil
+			b.observeAlternativeNonceRequest("success")
+			// Even the provider's own answer can fall below Blockbook's advertised pending
+			// view: Blink-style relays stop counting a still-pending tx at the pending tag
+			// while Blockbook keeps exposing it until the cache timeout (see
+			// reconcileMempoolTxs).
+			return b.alternativeSendTxProvider.raiseToPendingFloor(ethAddress, pending), confirmed, confirmedOK, nil
 		}
-		glog.Errorf("Alternative provider failed for eth_getTransactionCount: %v, falling back to primary RPC", err)
+		b.observeAlternativeNonceRequest("error")
+		glog.Warningf("Alternative provider failed for eth_getTransactionCount: %v, falling back to primary RPC", err)
 	}
 
 	pending, confirmed, confirmedOK, err := b.getNoncesRPC(ethAddress, withConfirmed)
 	if err != nil {
 		glog.Errorf("Primary RPC failed for eth_getTransactionCount: %v", err)
 		return 0, 0, false, err
+	}
+	if b.alternativeSendTxProvider != nil {
+		// Applied whenever a provider is configured, not only for gated senders: the routing
+		// entry expires at send time + timeout while the cached tx stays exposed as pending
+		// until fetch-back time + timeout (plus reconcile granularity), and in that window a
+		// primary answer below the floor would contradict the pending tx Blockbook still
+		// displays. The floor is a local scan of a usually-empty map, so it costs nothing on
+		// the hot path.
+		pending = b.alternativeSendTxProvider.raiseToPendingFloor(ethAddress, pending)
 	}
 	return pending, confirmed, confirmedOK, nil
 }
