@@ -2896,8 +2896,8 @@ func TestPublicServerAPIMempool(t *testing.T) {
 	ts := httptest.NewServer(s.https.Handler)
 	defer ts.Close()
 
-	// The test harness never syncs the fake chain mempool, so entries are
-	// always empty; paging metadata still reflects the sanitized parameters.
+	// The fake chain mempool is never synced, so the list is always empty;
+	// only the paging metadata varies with the request parameters.
 	tests := []struct {
 		name string
 		url  string
