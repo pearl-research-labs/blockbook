@@ -32,6 +32,13 @@ const txsOnPage = 25
 const blocksOnPage = 50
 const mempoolTxsOnPage = 50
 const txsInAPI = 1000
+const mempoolTxidsInAPI = 1000
+const maxMempoolTxidsPageSize = 10000
+
+// txsDetailsInAPI is lower than txsInAPI because details=txs materializes
+// full transactions with all inputs resolved, which on high fan-in addresses
+// costs orders of magnitude more memory than txids or txslight pages.
+const txsDetailsInAPI = 100
 const maxWebsocketBlockPageSize = 10000
 const maxBlockFiltersRange = 10000
 const maxPageNumber = 1000000
@@ -250,6 +257,7 @@ func (s *PublicServer) ConnectFullPublicInterface() {
 	serveMux.HandleFunc(path+"api/v2/tickers/", s.jsonHandler(s.apiTickers, apiV2))
 	serveMux.HandleFunc(path+"api/v2/multi-tickers/", s.jsonHandler(s.apiMultiTickers, apiV2))
 	serveMux.HandleFunc(path+"api/v2/tickers-list/", s.jsonHandler(s.apiAvailableVsCurrencies, apiV2))
+	serveMux.HandleFunc(path+"api/v2/mempool/", s.jsonHandler(s.apiMempool, apiV2))
 	// websocket interface
 	serveMux.Handle(path+"websocket", s.websocket.GetHandler())
 	s.isFullInterface = true
@@ -1045,7 +1053,6 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 	var voutFilter = api.AddressFilterVoutOff
 	page := validateIntParam(r.URL.Query().Get("page"), 0, 0, maxPageNumber)
 	pageSize := validateIntParam(r.URL.Query().Get("pageSize"), maxPageSize, 0, maxPageSize)
-	page, pageSize = sanitizeAccountPagingParams(page, pageSize, maxPageSize, maxPageSize)
 	from := validateIntParam(r.URL.Query().Get("from"), 0, 0, 10000000000)
 	to := validateIntParam(r.URL.Query().Get("to"), 0, 0, 10000000000)
 
@@ -1076,6 +1083,10 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 	case "txs":
 		accountDetails = api.AccountDetailsTxHistory
 	}
+	if accountDetails == api.AccountDetailsTxHistory && maxPageSize > txsDetailsInAPI {
+		maxPageSize = txsDetailsInAPI
+	}
+	page, pageSize = sanitizeAccountPagingParams(page, pageSize, maxPageSize, maxPageSize)
 	tokensToReturn := api.TokensToReturnNonzeroBalance
 	switch r.URL.Query().Get("tokens") {
 	case "derived":
@@ -1726,6 +1737,13 @@ func (s *PublicServer) apiFeeStats(r *http.Request, apiVersion int) (interface{}
 		feeStats, err = s.api.GetFeeStats(r.URL.Path[i+1:])
 	}
 	return feeStats, err
+}
+
+func (s *PublicServer) apiMempool(r *http.Request, apiVersion int) (interface{}, error) {
+	s.metrics.ExplorerViews.With(common.Labels{"action": "api-mempool"}).Inc()
+	page := validateIntParam(r.URL.Query().Get("page"), 0, 0, maxPageNumber)
+	pageSize := validateIntParam(r.URL.Query().Get("pageSize"), mempoolTxidsInAPI, 1, maxMempoolTxidsPageSize)
+	return s.api.GetMempool(page, pageSize)
 }
 
 type resultSendTransaction struct {
