@@ -818,7 +818,7 @@ func httpTestsBitcoinType(t *testing.T, ts *httptest.Server) {
 			status:      http.StatusOK,
 			contentType: "application/json; charset=utf-8",
 			body: []string{
-				`{"page":1,"totalPages":1,"itemsOnPage":1000,"address":"mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw","balance":"0","totalReceived":"1234567890123","totalSent":"1234567890123","unconfirmedBalance":"0","unconfirmedTxs":0,"txs":2,"transactions":[{"txid":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","vin":[{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","n":0,"addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true,"value":"1234567890123"},{"txid":"00b2c06055e5e90e9c82bd4181fde310104391a7fa4f289b1704e5d90caa3840","vout":1,"n":1,"addresses":["mtGXQvBowMkBpnhLckhxhbwYK44Gs9eEtz"],"isAddress":true,"value":"12345"}],"vout":[{"value":"317283951061","n":0,"spent":true,"hex":"76a914ccaaaf374e1b06cb83118453d102587b4273d09588ac","addresses":["mzB8cYrfRwFRFAGTDzV8LkUQy5BQicxGhX"],"isAddress":true},{"value":"917283951061","n":1,"hex":"76a9148d802c045445df49613f6a70ddd2e48526f3701f88ac","addresses":["mtR97eM2HPWVM6c8FGLGcukgaHHQv7THoL"],"isAddress":true},{"value":"0","n":2,"hex":"6a072020f1686f6a20","addresses":["OP_RETURN 2020f1686f6a20"],"isAddress":false}],"blockHash":"00000000eb0443fd7dc4a1ed5c686a8e995057805f9a161d9a5a77a95e72b7b6","blockHeight":225494,"confirmations":1,"blockTime":1521595678,"value":"1234567902122","valueIn":"1234567902468","fees":"346"},{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","vin":[],"vout":[{"value":"1234567890123","n":0,"spent":true,"hex":"76a914a08eae93007f22668ab5e4a9c83c8cd1c325e3e088ac","addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true},{"value":"1","n":1,"spent":true,"hex":"a91452724c5178682f70e0ba31c6ec0633755a3b41d987","addresses":["2MzmAKayJmja784jyHvRUW1bXPget1csRRG"],"isAddress":true},{"value":"9876","n":2,"spent":true,"hex":"a914e921fc4912a315078f370d959f2c4f7b6d2a683c87","addresses":["2NEVv9LJmAnY99W1pFoc5UJjVdypBqdnvu1"],"isAddress":true}],"blockHash":"0000000076fbbed90fd75b0e18856aa35baa984e9c9d444cf746ad85e94e2997","blockHeight":225493,"confirmations":2,"blockTime":1521515026,"value":"1234567900000","valueIn":"0","fees":"0"}]}`,
+				`{"page":1,"totalPages":1,"itemsOnPage":100,"address":"mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw","balance":"0","totalReceived":"1234567890123","totalSent":"1234567890123","unconfirmedBalance":"0","unconfirmedTxs":0,"txs":2,"transactions":[{"txid":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","vin":[{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","n":0,"addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true,"value":"1234567890123"},{"txid":"00b2c06055e5e90e9c82bd4181fde310104391a7fa4f289b1704e5d90caa3840","vout":1,"n":1,"addresses":["mtGXQvBowMkBpnhLckhxhbwYK44Gs9eEtz"],"isAddress":true,"value":"12345"}],"vout":[{"value":"317283951061","n":0,"spent":true,"hex":"76a914ccaaaf374e1b06cb83118453d102587b4273d09588ac","addresses":["mzB8cYrfRwFRFAGTDzV8LkUQy5BQicxGhX"],"isAddress":true},{"value":"917283951061","n":1,"hex":"76a9148d802c045445df49613f6a70ddd2e48526f3701f88ac","addresses":["mtR97eM2HPWVM6c8FGLGcukgaHHQv7THoL"],"isAddress":true},{"value":"0","n":2,"hex":"6a072020f1686f6a20","addresses":["OP_RETURN 2020f1686f6a20"],"isAddress":false}],"blockHash":"00000000eb0443fd7dc4a1ed5c686a8e995057805f9a161d9a5a77a95e72b7b6","blockHeight":225494,"confirmations":1,"blockTime":1521595678,"value":"1234567902122","valueIn":"1234567902468","fees":"346"},{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","vin":[],"vout":[{"value":"1234567890123","n":0,"spent":true,"hex":"76a914a08eae93007f22668ab5e4a9c83c8cd1c325e3e088ac","addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true},{"value":"1","n":1,"spent":true,"hex":"a91452724c5178682f70e0ba31c6ec0633755a3b41d987","addresses":["2MzmAKayJmja784jyHvRUW1bXPget1csRRG"],"isAddress":true},{"value":"9876","n":2,"spent":true,"hex":"a914e921fc4912a315078f370d959f2c4f7b6d2a683c87","addresses":["2NEVv9LJmAnY99W1pFoc5UJjVdypBqdnvu1"],"isAddress":true}],"blockHash":"0000000076fbbed90fd75b0e18856aa35baa984e9c9d444cf746ad85e94e2997","blockHeight":225493,"confirmations":2,"blockTime":1521515026,"value":"1234567900000","valueIn":"0","fees":"0"}]}`,
 			},
 		},
 		{
@@ -2597,7 +2597,7 @@ func httpTestsBitcoinTypeExtendedIndex(t *testing.T, ts *httptest.Server) {
 			status:      http.StatusOK,
 			contentType: "application/json; charset=utf-8",
 			body: []string{
-				`{"page":1,"totalPages":1,"itemsOnPage":1000,"address":"mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw","balance":"0","totalReceived":"1234567890123","totalSent":"1234567890123","unconfirmedBalance":"0","unconfirmedTxs":0,"txs":2,"transactions":[{"txid":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","vin":[{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","n":0,"addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true,"value":"1234567890123"},{"txid":"00b2c06055e5e90e9c82bd4181fde310104391a7fa4f289b1704e5d90caa3840","vout":1,"n":1,"addresses":["mtGXQvBowMkBpnhLckhxhbwYK44Gs9eEtz"],"isAddress":true,"value":"12345"}],"vout":[{"value":"317283951061","n":0,"spent":true,"spentTxId":"3d90d15ed026dc45e19ffb52875ed18fa9e8012ad123d7f7212176e2b0ebdb71","spentHeight":225494,"hex":"76a914ccaaaf374e1b06cb83118453d102587b4273d09588ac","addresses":["mzB8cYrfRwFRFAGTDzV8LkUQy5BQicxGhX"],"isAddress":true},{"value":"917283951061","n":1,"hex":"76a9148d802c045445df49613f6a70ddd2e48526f3701f88ac","addresses":["mtR97eM2HPWVM6c8FGLGcukgaHHQv7THoL"],"isAddress":true},{"value":"0","n":2,"hex":"6a072020f1686f6a20","addresses":["OP_RETURN 2020f1686f6a20"],"isAddress":false}],"blockHash":"00000000eb0443fd7dc4a1ed5c686a8e995057805f9a161d9a5a77a95e72b7b6","blockHeight":225494,"confirmations":1,"blockTime":1521595678,"value":"1234567902122","valueIn":"1234567902468","fees":"346"},{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","vin":[],"vout":[{"value":"1234567890123","n":0,"spent":true,"spentTxId":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","spentHeight":225494,"hex":"76a914a08eae93007f22668ab5e4a9c83c8cd1c325e3e088ac","addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true},{"value":"1","n":1,"spent":true,"spentTxId":"3d90d15ed026dc45e19ffb52875ed18fa9e8012ad123d7f7212176e2b0ebdb71","spentIndex":1,"spentHeight":225494,"hex":"a91452724c5178682f70e0ba31c6ec0633755a3b41d987","addresses":["2MzmAKayJmja784jyHvRUW1bXPget1csRRG"],"isAddress":true},{"value":"9876","n":2,"spent":true,"spentTxId":"05e2e48aeabdd9b75def7b48d756ba304713c2aba7b522bf9dbc893fc4231b07","spentHeight":225494,"hex":"a914e921fc4912a315078f370d959f2c4f7b6d2a683c87","addresses":["2NEVv9LJmAnY99W1pFoc5UJjVdypBqdnvu1"],"isAddress":true}],"blockHash":"0000000076fbbed90fd75b0e18856aa35baa984e9c9d444cf746ad85e94e2997","blockHeight":225493,"confirmations":2,"blockTime":1521515026,"value":"1234567900000","valueIn":"0","fees":"0"}]}`,
+				`{"page":1,"totalPages":1,"itemsOnPage":100,"address":"mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw","balance":"0","totalReceived":"1234567890123","totalSent":"1234567890123","unconfirmedBalance":"0","unconfirmedTxs":0,"txs":2,"transactions":[{"txid":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","vin":[{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","n":0,"addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true,"value":"1234567890123"},{"txid":"00b2c06055e5e90e9c82bd4181fde310104391a7fa4f289b1704e5d90caa3840","vout":1,"n":1,"addresses":["mtGXQvBowMkBpnhLckhxhbwYK44Gs9eEtz"],"isAddress":true,"value":"12345"}],"vout":[{"value":"317283951061","n":0,"spent":true,"spentTxId":"3d90d15ed026dc45e19ffb52875ed18fa9e8012ad123d7f7212176e2b0ebdb71","spentHeight":225494,"hex":"76a914ccaaaf374e1b06cb83118453d102587b4273d09588ac","addresses":["mzB8cYrfRwFRFAGTDzV8LkUQy5BQicxGhX"],"isAddress":true},{"value":"917283951061","n":1,"hex":"76a9148d802c045445df49613f6a70ddd2e48526f3701f88ac","addresses":["mtR97eM2HPWVM6c8FGLGcukgaHHQv7THoL"],"isAddress":true},{"value":"0","n":2,"hex":"6a072020f1686f6a20","addresses":["OP_RETURN 2020f1686f6a20"],"isAddress":false}],"blockHash":"00000000eb0443fd7dc4a1ed5c686a8e995057805f9a161d9a5a77a95e72b7b6","blockHeight":225494,"confirmations":1,"blockTime":1521595678,"value":"1234567902122","valueIn":"1234567902468","fees":"346"},{"txid":"effd9ef509383d536b1c8af5bf434c8efbf521a4f2befd4022bbd68694b4ac75","vin":[],"vout":[{"value":"1234567890123","n":0,"spent":true,"spentTxId":"7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25","spentHeight":225494,"hex":"76a914a08eae93007f22668ab5e4a9c83c8cd1c325e3e088ac","addresses":["mv9uLThosiEnGRbVPS7Vhyw6VssbVRsiAw"],"isAddress":true,"isOwn":true},{"value":"1","n":1,"spent":true,"spentTxId":"3d90d15ed026dc45e19ffb52875ed18fa9e8012ad123d7f7212176e2b0ebdb71","spentIndex":1,"spentHeight":225494,"hex":"a91452724c5178682f70e0ba31c6ec0633755a3b41d987","addresses":["2MzmAKayJmja784jyHvRUW1bXPget1csRRG"],"isAddress":true},{"value":"9876","n":2,"spent":true,"spentTxId":"05e2e48aeabdd9b75def7b48d756ba304713c2aba7b522bf9dbc893fc4231b07","spentHeight":225494,"hex":"a914e921fc4912a315078f370d959f2c4f7b6d2a683c87","addresses":["2NEVv9LJmAnY99W1pFoc5UJjVdypBqdnvu1"],"isAddress":true}],"blockHash":"0000000076fbbed90fd75b0e18856aa35baa984e9c9d444cf746ad85e94e2997","blockHeight":225493,"confirmations":2,"blockTime":1521515026,"value":"1234567900000","valueIn":"0","fees":"0"}]}`,
 			},
 		},
 		{
@@ -2865,6 +2865,70 @@ func Test_sanitizeAccountPagingParams(t *testing.T) {
 	}
 }
 
+func Test_getAddressQueryParamsDetailsTxsPageSizeCap(t *testing.T) {
+	tests := []struct {
+		name         string
+		query        string
+		wantDetails  api.AccountDetails
+		wantPageSize int
+		wantPage     int
+	}{
+		{
+			name:         "details txs caps explicit oversized page size",
+			query:        "?details=txs&pageSize=1000&page=1",
+			wantDetails:  api.AccountDetailsTxHistory,
+			wantPageSize: txsDetailsInAPI,
+			wantPage:     1,
+		},
+		{
+			name:         "details txs caps default page size",
+			query:        "?details=txs",
+			wantDetails:  api.AccountDetailsTxHistory,
+			wantPageSize: txsDetailsInAPI,
+			wantPage:     0,
+		},
+		{
+			name:         "details txslight keeps api page size",
+			query:        "?details=txslight&pageSize=1000&page=1",
+			wantDetails:  api.AccountDetailsTxHistoryLight,
+			wantPageSize: txsInAPI,
+			wantPage:     1,
+		},
+		{
+			name:         "details txids keeps api page size",
+			query:        "?details=txids&pageSize=1000&page=1",
+			wantDetails:  api.AccountDetailsTxidHistory,
+			wantPageSize: txsInAPI,
+			wantPage:     1,
+		},
+		{
+			name:         "details txs applies offset cap using reduced page size",
+			query:        "?details=txs&pageSize=1000&page=2000",
+			wantDetails:  api.AccountDetailsTxHistory,
+			wantPageSize: txsDetailsInAPI,
+			wantPage:     maxAccountHistoryPagingOffset / txsDetailsInAPI,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			page, pageSize, details, _, _, _ := (&PublicServer{}).getAddressQueryParams(
+				newGetRequest("http://example.com/api/v2/address/test"+tt.query),
+				api.AccountDetailsTxidHistory,
+				txsInAPI,
+			)
+			if details != tt.wantDetails {
+				t.Errorf("details = %v, want %v", details, tt.wantDetails)
+			}
+			if pageSize != tt.wantPageSize {
+				t.Errorf("pageSize = %v, want %v", pageSize, tt.wantPageSize)
+			}
+			if page != tt.wantPage {
+				t.Errorf("page = %v, want %v", page, tt.wantPage)
+			}
+		})
+	}
+}
+
 func Test_validateIntValue_gapClamp(t *testing.T) {
 	// Mirrors the WS getAccountInfo gap clamp: validateIntValue(req.Gap, 0, 0, maxGapValue).
 	tests := []struct {
@@ -2904,6 +2968,63 @@ func Test_countCommaSeparatedValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := countCommaSeparatedValues(tt.value, tt.limit); got != tt.want {
 				t.Errorf("countCommaSeparatedValues(%q, %d) = %d, want %d", tt.value, tt.limit, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestPublicServerAPIMempool(t *testing.T) {
+	parser, chain := setupChain(t)
+	s, dbpath := setupPublicHTTPServer(parser, chain, t, false)
+	defer closeAndDestroyPublicServer(t, s, dbpath)
+	s.ConnectFullPublicInterface()
+	ts := httptest.NewServer(s.https.Handler)
+	defer ts.Close()
+
+	// The fake chain mempool is never synced, so the list is always empty;
+	// only the paging metadata varies with the request parameters.
+	tests := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{
+			name: "default paging",
+			url:  "/api/v2/mempool/",
+			want: `{"page":1,"totalPages":1,"itemsOnPage":1000,"mempool":[],"mempoolSize":0}`,
+		},
+		{
+			name: "custom page size",
+			url:  "/api/v2/mempool/?page=1&pageSize=25",
+			want: `{"page":1,"totalPages":1,"itemsOnPage":25,"mempool":[],"mempoolSize":0}`,
+		},
+		{
+			name: "page size above maximum is clamped",
+			url:  "/api/v2/mempool/?pageSize=999999",
+			want: `{"page":1,"totalPages":1,"itemsOnPage":10000,"mempool":[],"mempoolSize":0}`,
+		},
+		{
+			name: "invalid params fall back to defaults",
+			url:  "/api/v2/mempool/?page=-3&pageSize=xyz",
+			want: `{"page":1,"totalPages":1,"itemsOnPage":1000,"mempool":[],"mempoolSize":0}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			res, err := http.DefaultClient.Do(newGetRequest(ts.URL + tt.url))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer res.Body.Close()
+			if res.StatusCode != http.StatusOK {
+				t.Fatalf("status = %d, want %d", res.StatusCode, http.StatusOK)
+			}
+			body, err := io.ReadAll(res.Body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := strings.TrimSpace(string(body)); got != tt.want {
+				t.Errorf("body = %s, want %s", got, tt.want)
 			}
 		})
 	}

@@ -432,6 +432,46 @@ paths:
         default:
           $ref: "#/components/responses/Error"
 
+  /api/v2/mempool/:
+    get:
+      tags: [Transactions]
+      operationId: getMempool
+      summary: Get a page of mempool transaction ids.
+      description: |-
+        Returns a paged list of transactions currently in the mempool of this
+        Blockbook instance, newest first, with the time each transaction was
+        first seen. The same data is rendered by the explorer /mempool page.
+
+        The mempool view is instance-local: entries and first-seen times can
+        differ between Blockbook instances and from the backend node mempool.
+        Use the WebSocket subscribeNewTransaction method to keep a bootstrapped
+        snapshot up to date.
+
+        Load estimate: Medium; snapshots and sorts the instance mempool index,
+        growing with mempool size. The response itself is bounded by pageSize.
+      parameters:
+        - $ref: "#/components/parameters/Page"
+        - name: pageSize
+          in: query
+          description: Number of mempool transactions per page.
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 1000
+      responses:
+        "200":
+          description: Page of mempool txids.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MempoolTxids"
+              examples:
+                mempool:
+                  $ref: "#/components/examples/MempoolTxids"
+        default:
+          $ref: "#/components/responses/Error"
+
   /api/v2/address/{address}:
     get:
       tags: [Accounts]
@@ -1503,6 +1543,19 @@ components:
       value:
         result: "7c3be24063f268aaa1ed81b64776798f56088757641a34fb156c4f51ed2e9d25"
 
+    MempoolTxids:
+      summary: Page of mempool txids
+      value:
+        page: 1
+        totalPages: 233
+        itemsOnPage: 1000
+        mempool:
+          - time: 1725957759
+            txid: "8c1e3dec662d1f2a5e322ccef5eca263f98eb16723c6f990be0c88c1db113fb1"
+          - time: 1725957758
+            txid: "0eb7b574373de2c88d0dc1444f49947c681d0437d21361f9ebb4dd09c62f2a66"
+        mempoolSize: 232021
+
     BitcoinAddressTxids:
       summary: Address with transaction ids
       value:
@@ -1845,6 +1898,37 @@ components:
         result:
           type: string
           description: Broadcast transaction id/hash.
+
+    MempoolTxid:
+      type: object
+      required: [time, txid]
+      properties:
+        time:
+          type: integer
+          format: int64
+          description: Unix timestamp when this instance first saw the transaction.
+        txid:
+          type: string
+          description: Transaction id/hash of the mempool entry.
+
+    MempoolTxids:
+      type: object
+      required: [mempool, mempoolSize]
+      properties:
+        page:
+          type: integer
+        totalPages:
+          type: integer
+        itemsOnPage:
+          type: integer
+        mempool:
+          type: array
+          items:
+            $ref: "#/components/schemas/MempoolTxid"
+          description: Page of mempool transactions, newest first.
+        mempoolSize:
+          type: integer
+          description: Total number of transactions in the mempool.
 
     AddressAlias:
       type: object
