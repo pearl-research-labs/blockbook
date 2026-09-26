@@ -124,7 +124,8 @@ func (d *PearlRPC) Initialize() error {
 	d.Parser = NewPearlParser(ci.Chain, &d.cfg)
 
 	// Set Network/Testnet flags for Blockbook.
-	// Pearl node uses "main" / "test" style chain names.
+	// Pearl node reports "mainnet" / "testnet" / "testnet2" / "regtest" /
+	// "signet" / "simnet" style chain names (chaincfg.Params.Name).
 	if strings.Contains(strings.ToLower(ci.Chain), "test") || strings.Contains(strings.ToLower(ci.Chain), "reg") || strings.Contains(strings.ToLower(ci.Chain), "signet") {
 		d.Testnet = true
 		d.Network = "testnet"
@@ -252,7 +253,12 @@ func (d *PearlRPC) GetChainInfo() (*bchain.ChainInfo, error) {
 	if err != nil {
 		// Fall back to getinfo for older nodes.
 		if rpcErr, ok := err.(*btcjson.RPCError); ok && int(rpcErr.Code) == -1 && rpcErr.Message == "Command unimplemented" {
-			var gi btcjson.InfoWalletResult
+			// NewGetInfoCmd is a chain-server command: decode into the chain
+			// result type (InfoChainResult), not the wallet-server
+			// InfoWalletResult. The fields read below share the same JSON
+			// tags and Go types in both, but the chain type is the correct
+			// contract for this endpoint.
+			var gi btcjson.InfoChainResult
 			if err := d.call(btcjson.NewGetInfoCmd(), &gi); err != nil {
 				return nil, err
 			}
