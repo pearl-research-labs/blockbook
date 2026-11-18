@@ -46,7 +46,7 @@ jobs:
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Build blockbook binary
-        run: make build BASE_IMAGE=debian:11
+        run: make build BASE_IMAGE=debian:13
 
       # Standalone context: .gitignore-style rules can't exclude build/*.
       - name: Assemble runtime build context
