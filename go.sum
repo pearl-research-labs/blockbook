@@ -212,8 +212,8 @@ github.com/onsi/ginkgo v1.6.0/go.mod h1:lLunBs/Ym6LB5Z9jYTR76FiuTmxDTDusOGeTQH+W
 github.com/onsi/gomega v1.4.1/go.mod h1:C1qb7wdrVGGVU+Z6iS04AVkA3Q65CEZX59MT0QO5uiA=
 github.com/onsi/gomega v1.38.2 h1:eZCjf2xjZAqe+LeWvKb5weQ+NcPwX84kqJ0cZNxok2A=
 github.com/onsi/gomega v1.38.2/go.mod h1:W2MJcYxRGV63b418Ai34Ud0hEdTVXq9NW9+Sx6uXf3k=
-github.com/pearl-research-labs/pearl v1.5.8-0.20261117214811-281c0bcf8626 h1:6V4KDPb1FQVrwMmhVrt1+irXIh+jICvcuxDzk5Nohl8=
-github.com/pearl-research-labs/pearl v1.5.8-0.20261117214811-281c0bcf8626/go.mod h1:70uqp2fmuo9Yqz6BPjen+1J4cUfb6JgI6ajjJ/DjCdE=
+github.com/pearl-research-labs/pearl v1.5.8-0.20261118142442-11956cb9c42a h1:DaI3ARnuqsX9dI9g4Bhzh3A7TbYCRHz4PDnIBet56P4=
+github.com/pearl-research-labs/pearl v1.5.8-0.20261118142442-11956cb9c42a/go.mod h1:70uqp2fmuo9Yqz6BPjen+1J4cUfb6JgI6ajjJ/DjCdE=
 github.com/pebbe/zmq4 v1.2.1 h1:jrXQW3mD8Si2mcSY/8VBs2nNkK/sKCOEM0rHAfxyc8c=
 github.com/pebbe/zmq4 v1.2.1/go.mod h1:7N4y5R18zBiu3l0vajMUWQgZyjv464prE8RCyBcmnZM=
 github.com/pion/dtls/v2 v2.2.7 h1:cSUBsETxepsCSFSxC3mc/aDo14qQLMSL+O6IjG28yV8=

@@ -22,7 +22,7 @@ require (
 	github.com/martinboehm/bchutil v0.0.0-20190104112650-6373f11b6efe
 	github.com/martinboehm/btcd v0.0.0-20221101112928-408689e15809
 	github.com/martinboehm/btcutil v0.0.0-20211010173611-6ef1889c1819
-	github.com/pearl-research-labs/pearl v1.5.8-0.20261117214811-281c0bcf8626
+	github.com/pearl-research-labs/pearl v1.5.8-0.20261118142442-11956cb9c42a
 	github.com/pebbe/zmq4 v1.2.1
 	github.com/pirk/ecashaddr-converter v0.0.0-20220121162910-c6cb45163b29
 	github.com/pirk/ecashutil v0.0.0-20220124103933-d37f548d249e
