@@ -1,6 +1,6 @@
 module github.com/trezor/blockbook
 
-go 1.26.5
+go 1.26.10
 
 require (
 	github.com/ava-labs/avalanchego v1.14.0
@@ -22,17 +22,17 @@ require (
 	github.com/martinboehm/bchutil v0.0.0-20190104112650-6373f11b6efe
 	github.com/martinboehm/btcd v0.0.0-20221101112928-408689e15809
 	github.com/martinboehm/btcutil v0.0.0-20211010173611-6ef1889c1819
-	github.com/pearl-research-labs/pearl v1.4.1-0.20260811101928-fadd42af05ad
+	github.com/pearl-research-labs/pearl v1.5.8-0.20261117214811-281c0bcf8626
 	github.com/pebbe/zmq4 v1.2.1
 	github.com/pirk/ecashaddr-converter v0.0.0-20220121162910-c6cb45163b29
 	github.com/pirk/ecashutil v0.0.0-20220124103933-d37f548d249e
-	github.com/prometheus/client_golang v1.23.2
+	github.com/prometheus/client_golang v1.25.0
 	github.com/schancel/cashaddr-converter v0.0.0-20181111022653-4769e7add95a
-	github.com/stretchr/testify v1.11.1
+	github.com/stretchr/testify v1.12.1
 	github.com/tkrajina/typescriptify-golang-structs v0.1.11
-	golang.org/x/crypto v0.53.0
-	golang.org/x/sync v0.21.0
-	google.golang.org/protobuf v1.36.11
+	golang.org/x/crypto v0.58.0
+	golang.org/x/sync v0.24.0
+	google.golang.org/protobuf v1.36.12
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -50,7 +50,6 @@ require (
 	github.com/consensys/gnark-crypto v0.18.1 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.4.0 // indirect
 	github.com/crate-crypto/go-ipa v0.0.0-20240724233137-53bbb0ceb27a // indirect
-	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/dchest/blake256 v1.0.0 // indirect
 	github.com/dchest/siphash v1.2.3 // indirect
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
@@ -71,10 +70,9 @@ require (
 	github.com/kkdai/bstream v1.0.0 // indirect
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
-	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2 // indirect
-	github.com/prometheus/client_model v0.6.2 // indirect
-	github.com/prometheus/common v0.69.0 // indirect
-	github.com/prometheus/procfs v0.19.2 // indirect
+	github.com/prometheus/client_model v0.6.3 // indirect
+	github.com/prometheus/common v0.72.0 // indirect
+	github.com/prometheus/procfs v0.22.0 // indirect
 	github.com/shirou/gopsutil v3.21.11+incompatible // indirect
 	github.com/supranational/blst v0.3.16-0.20250831170142-f48500c1fdbe // indirect
 	github.com/tklauser/go-sysconf v0.3.15 // indirect
@@ -82,8 +80,8 @@ require (
 	github.com/tkrajina/go-reflector v0.5.5 // indirect
 	github.com/yusufpapurcu/wmi v1.2.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/net v0.56.0 // indirect
-	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
+	golang.org/x/sys v0.49.0 // indirect
 	gopkg.in/mgo.v2 v2.0.0-20190816093944-a6b53ec6cb22 // indirect
 )
 
