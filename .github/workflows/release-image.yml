@@ -45,8 +45,10 @@ jobs:
         id: tag
         run: echo "sha=$(git rev-parse --short=12 HEAD)" >> "$GITHUB_OUTPUT"
 
+      # PORTABLE=0 compiles RocksDB for the runner's own CPU; a runner with
+      # AVX-512 then yields a binary that dies with SIGILL on older hosts.
       - name: Build blockbook binary
-        run: make build BASE_IMAGE=debian:13
+        run: make build BASE_IMAGE=debian:13 PORTABLE=1
 
       # Standalone context: .gitignore-style rules can't exclude build/*.
       - name: Assemble runtime build context
