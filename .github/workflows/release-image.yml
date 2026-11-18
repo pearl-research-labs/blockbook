@@ -10,6 +10,11 @@ on:
         required: true
         type: boolean
         default: true
+      latest:
+        description: "Also tag the image as latest (mainnet releases only)"
+        required: true
+        type: boolean
+        default: false
 
 env:
   IMAGE_NAME: ghcr.io/${{ github.repository_owner }}/blockbook
@@ -86,6 +91,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       SHA: ${{ needs.build.outputs.sha }}
+      TAG_LATEST: ${{ inputs.latest }}
     steps:
       - name: Log in to GHCR
         uses: docker/login-action@74a5d142397b4f367a81961eba4e8cd7edddf772 # v3.4.0
@@ -96,8 +102,12 @@ jobs:
 
       - name: Create multi-arch manifest
         run: |
-          docker buildx imagetools create \
-            -t "$IMAGE_NAME:$SHA" -t "$IMAGE_NAME:latest" \
+          # latest is reserved for mainnet releases, so branch builds only get the SHA tag.
+          tags=(-t "$IMAGE_NAME:$SHA")
+          if [ "$TAG_LATEST" = "true" ]; then
+            tags+=(-t "$IMAGE_NAME:latest")
+          fi
+          docker buildx imagetools create "${tags[@]}" \
             "$IMAGE_NAME:$SHA-amd64" "$IMAGE_NAME:$SHA-arm64"
 
       - name: Verify manifest
