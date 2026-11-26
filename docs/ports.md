@@ -20,7 +20,6 @@
 | GameCredits                      | 9144             | 9044               | 8044        | 38344                                               |
 | Groestlcoin                      | 9145             | 9045               | 8045        | 38345                                               |
 | Bitcoin Cash SV                  | 9146             | 9046               | 8046        | 38346                                               |
-| Liquid                           | 9147             | 9047               | 8047        | 38347                                               |
 | Fujicoin                         | 9148             | 9048               | 8048        | 38348                                               |
 | PIVX                             | 9149             | 9049               | 8049        | 38349                                               |
 | Firo                             | 9150             | 9050               | 8050        | 38350                                               |
@@ -61,7 +60,9 @@
 | Arbitrum Nova Archive            | 9308             | 9208               | 8308        | 38408 p2p                                           |
 | Base                             | 9309             | 9209               | 8309        | 38409 p2p, 8209 http, 8409 authrpc                  |
 | Base Archive                     | 9311             | 9211               | 8211        | 38411 p2p, 8311 http, 8411 authrpc                  |
-| Tron                             | 9312             | 9212               | 8545        | 1111 p2p, 5555, 8090 http                           |
+| Tron                             | 9312             | 9212               | 8545        | 1111 p2p, 5555                                      |
+| Robinhood Archive                | 9313             | 9213               | 8213        | 38413 p2p, 8313 http                                |
+| HyperEVM Archive                 | 9314             | 9214               | 8214        | 38414 p2p, 8314 http                                |
 | Bitcoin Signet                   | 19120            | 19020              | 18020       | 48320                                               |
 | Bitcoin Regtest                  | 19121            | 19021              | 18021       | 48321                                               |
 | Bitcoin Testnet4                 | 19129            | 19029              | 18029       | 48329                                               |
@@ -82,14 +83,13 @@
 | Koto Testnet                     | 19151            | 19051              | 18051       | 48351                                               |
 | Decred Testnet                   | 19161            | 19061              | 18061       | 48361                                               |
 | Flo Testnet                      | 19166            | 19066              | 18066       | 48366                                               |
-| Ethereum Testnet Holesky         | 19116            | 19016              | 18016       | 18116 http, 18516 authrpc, 48316 p2p                |
-| Ethereum Testnet Holesky Archive | 19136            | 19036              | 18036       | 18136 http, 18136 torrent, 18536 authrpc, 48336 p2p |
 | Ethereum Testnet Hoodi           | 19106            | 19006              | 18006       | 18106 http, 18506 authrpc, 48306 p2p                |
 | Ethereum Testnet Hoodi Archive   | 19126            | 19026              | 18026       | 18126 http, 18126 torrent, 18526 authrpc, 48326 p2p |
 | Ethereum Testnet Sepolia         | 19176            | 19076              | 18076       | 18176 http, 18576 authrpc, 48376 p2p                |
+| Robinhood Chain Testnet          | 19177            | 19077              | 18077       | 18177 http, 48377 p2p                               |
 | Ethereum Testnet Sepolia Archive | 19186            | 19086              | 18086       | 18186 http, 18186 torrent, 18586 authrpc, 48386 p2p |
 | Qtum Testnet                     | 19188            | 19088              | 18088       | 48388                                               |
 | Omotenashicoin Testnet           | 19189            | 19089              | 18089       | 48389                                               |
-| Tron Nile                        | 19190            | 19090              | 8545        | 18888 p2p, 5555, 8090 http                          |
+| Tron Nile                        | 19190            | 19090              | 8545        | 18888 p2p, 5555                                     |
 
 > NOTE: This document is generated from coin definitions in `configs/coins` using command `go run contrib/scripts/check-and-generate-port-registry.go -w`.

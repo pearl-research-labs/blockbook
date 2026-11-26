@@ -4,12 +4,14 @@ import (
 	"context"
 	"encoding/hex"
 	"encoding/json"
+	"io"
 	"math/big"
 	"net/http"
 	"net/netip"
 	"net/url"
 	"os"
 	"runtime/debug"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -31,10 +33,11 @@ const outChannelSize = 500
 const defaultTimeout = 60 * time.Second
 const unknownMethodLabel = "unknown"
 const maxWebsocketMessageBytes int64 = 4 * 1024 * 1024
+
 // defaultWsPendingRequestsLimit is the default per-connection cap on
 // concurrently executing requests; override with
 // <network>_WS_PENDING_REQUESTS_LIMIT (0 disables), see docs/env.md.
-const defaultWsPendingRequestsLimit = 48
+const defaultWsPendingRequestsLimit = 128
 
 // maxWebsocketMempoolFiltersResponses caps per-connection getMempoolFilters
 // requests over their whole lifecycle: the slot is acquired before the handler
@@ -47,10 +50,25 @@ const defaultWsPendingRequestsLimit = 48
 const maxWebsocketMempoolFiltersResponses = 4
 const maxWebsocketActiveRequests = 2048
 const maxWebsocketEstimateFeeBlocks = 32
-const maxWebsocketSubscribeAddresses = 1000
+
+// maxPrivatePendingNonces bounds how many declared in-flight private nonces a getAccountInfo
+// request may contribute (see WsPrivatePending). An address realistically has a handful of
+// in-flight transactions; the cap keeps a malformed or hostile request from forcing unbounded work,
+// and it bounds how far the pending-nonce walk can advance in one request.
+const maxPrivatePendingNonces = 64
+
+// Per-connection subscribeAddresses caps by chain family. A UTXO wallet subscribes
+// every derived address of every account (Trezor Suite: 40 per fresh account, all
+// wallets on one connection), an EVM account is a single address.
+const defaultWsMaxSubscribeAddressesUTXO = 5000
+const defaultWsMaxSubscribeAddressesEVM = 1000
 const maxWebsocketSubscribeAddressesWithNewBlockTxs = 100
 const maxWebsocketSubscribeFiatRatesTokens = 1000
 const websocketLogPreviewBytes = 256
+const websocketErrorTextBytes = 1024
+
+// websocketErrorLogsPerSecond caps client-triggered Error lines; glog exits the process on a full disk.
+const websocketErrorLogsPerSecond = 10
 
 // allRates is a special "currency" parameter that means all available currencies
 const allFiatRates = "!ALL!"
@@ -78,6 +96,7 @@ type websocketChannel struct {
 	ipKey                        string
 	blockKey                     string
 	blockable                    bool
+	limited                      bool
 	messageRate                  *connMessageRate
 	requestHeader                http.Header
 	alive                        bool
@@ -127,6 +146,7 @@ type WebsocketServer struct {
 	// of these ranges (or a loopback/private proxy). Empty disables verification
 	// and falls back to the legacy "trust CF headers from any peer" behavior.
 	cloudflarePrefixes []netip.Prefix
+	whitelistPrefixes  []netip.Prefix
 	// trustPseudoIPv6 honors the (otherwise client-spoofable) CF-Connecting-IPv6
 	// header; only safe with Cloudflare "Pseudo IPv4: Overwrite Headers" on.
 	trustPseudoIPv6 bool
@@ -141,6 +161,9 @@ type WebsocketServer struct {
 	// pendingRequestsLimit caps how many requests a single connection may have
 	// executing concurrently before it is closed; 0 disables the cap.
 	pendingRequestsLimit int
+	// maxSubscribeAddresses caps the address list of one subscribeAddresses
+	// request; 0 disables the cap.
+	maxSubscribeAddresses int
 	// ipBlockEnabled gates the whole IP blocklist: true only when the rate limit can
 	// produce breaches (messageRateLimit > 0) and blocking is configured
 	// (ipBlockDuration > 0). When false, all block checks/sweeps are skipped.
@@ -153,6 +176,7 @@ type WebsocketServer struct {
 	activeChannels map[*websocketChannel]struct{}
 	activeRequests int
 	requestWg      sync.WaitGroup
+	errorLogBudget errorLogBudget
 }
 
 // NewWebsocketServer creates new websocket interface to blockbook and returns its handle
@@ -181,10 +205,12 @@ func NewWebsocketServer(db *db.RocksDB, chain bchain.BlockChain, mempool bchain.
 		addressSubscriptions:        make(map[string]map[*websocketChannel]*addressDetails),
 		fiatRatesSubscriptions:      make(map[string]map[*websocketChannel]string),
 		fiatRatesTokenSubscriptions: make(map[*websocketChannel][]string),
-		websocketLimiter:            newWebsocketConnectionLimiter(),
 		activeChannels:              make(map[*websocketChannel]struct{}),
 	}
 	s.upgrader = &websocket.Upgrader{
+		// Bound the handshake so a client that stalls mid-upgrade releases the
+		// connection instead of holding it open indefinitely
+		HandshakeTimeout:  httpReadHeaderTimeout,
 		ReadBufferSize:    1024 * 32,
 		WriteBufferSize:   1024 * 32,
 		WriteBufferPool:   &sync.Pool{},
@@ -214,10 +240,32 @@ func NewWebsocketServer(db *db.RocksDB, chain bchain.BlockChain, mempool bchain.
 	if clientIPCfg.trustPseudoIPv6 {
 		glog.Info("Cloudflare Pseudo-IPv4 mode enabled (", clientIPCfg.pseudoIPv6EnvName, "); CF-Connecting-IPv6 is honored as the client IP (requires Cloudflare \"Pseudo IPv4: Overwrite Headers\")")
 	}
+	if err := s.configureConnectionLimits(is.GetNetwork()); err != nil {
+		return nil, err
+	}
+	whitelistEnvNames := []string{
+		strings.ToUpper(is.GetNetwork()) + "_WS_WHITELIST_IPS",
+		"WS_WHITELIST_IPS",
+	}
+	for _, envName := range whitelistEnvNames {
+		whitelistValue := os.Getenv(envName)
+		if whitelistValue == "" {
+			continue
+		}
+		s.whitelistPrefixes, err = parseCIDRList(envName, splitCIDRList(whitelistValue))
+		if err != nil {
+			return nil, err
+		}
+		glog.Infof("Websocket whitelisted CIDRs (%s): %v", envName, s.whitelistPrefixes)
+		break
+	}
 	if err := s.configureMessageRateLimit(is.GetNetwork()); err != nil {
 		return nil, err
 	}
 	if err := s.configurePendingRequestsLimit(is.GetNetwork()); err != nil {
+		return nil, err
+	}
+	if err := s.configureSubscribeAddressesLimit(is.GetNetwork(), s.chainParser.GetChainType()); err != nil {
 		return nil, err
 	}
 	if s.metrics != nil {
@@ -272,12 +320,22 @@ func (s *WebsocketServer) checkOrigin(r *http.Request) bool {
 	return ok
 }
 
-func normalizeOrigin(origin string) (string, bool) {
-	u, err := url.Parse(origin)
+// parseOrigin parses an Origin/Referer URL into its lowercased scheme and host,
+// rejecting malformed values and the opaque "null" origin (ok=false).
+func parseOrigin(raw string) (scheme, host string, ok bool) {
+	u, err := url.Parse(raw)
 	if err != nil || u.Scheme == "" || u.Host == "" {
+		return "", "", false
+	}
+	return strings.ToLower(u.Scheme), strings.ToLower(u.Host), true
+}
+
+func normalizeOrigin(origin string) (string, bool) {
+	scheme, host, ok := parseOrigin(origin)
+	if !ok {
 		return "", false
 	}
-	return strings.ToLower(u.Scheme) + "://" + strings.ToLower(u.Host), true
+	return scheme + "://" + host, true
 }
 
 func getWebsocketPayloadPreview(d []byte) string {
@@ -285,6 +343,41 @@ func getWebsocketPayloadPreview(d []byte) string {
 		return string(d)
 	}
 	return string(d[:websocketLogPreviewBytes]) + "...(truncated)"
+}
+
+func truncateWebsocketText(s string) string {
+	if len(s) <= websocketErrorTextBytes {
+		return s
+	}
+	return s[:websocketErrorTextBytes] + "...(truncated)"
+}
+
+type errorLogBudget struct {
+	mu     sync.Mutex
+	second int64
+	count  int
+}
+
+// allow reports whether another error line fits into the current second's budget.
+// The window only moves forward, so a late, older timestamp cannot reset the count.
+func (b *errorLogBudget) allow(now time.Time) bool {
+	b.mu.Lock()
+	prevSecond, suppressed := b.second, 0
+	if sec := now.Unix(); sec > b.second {
+		suppressed = b.count - websocketErrorLogsPerSecond
+		b.second, b.count = sec, 0
+	}
+	b.count++
+	count := b.count
+	b.mu.Unlock()
+	// log outside the lock so a slow disk does not stall other failing requests
+	if suppressed > 0 {
+		glog.Warning("Suppressed ", suppressed, " websocket client error log lines in second ", time.Unix(prevSecond, 0).UTC().Format(time.RFC3339))
+	}
+	if count == websocketErrorLogsPerSecond+1 {
+		glog.Warning("Websocket client error log limit of ", websocketErrorLogsPerSecond, " lines per second reached, suppressing")
+	}
+	return count <= websocketErrorLogsPerSecond
 }
 
 // ServeHTTP sets up handler of websocket channel
@@ -301,13 +394,21 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip, blockSafe, _ := resolveClientIP(r, s.trustedProxyPrefixes, s.cloudflarePrefixes, s.trustPseudoIPv6)
+	// Whitelisted IPs bypass all rate limiting (connection limiter, IP blocklist,
+	// and per-connection message rate tracking).
+	whitelisted := false
+	if len(s.whitelistPrefixes) > 0 {
+		if addr, ok := parseAddr(ip); ok {
+			whitelisted = isWhitelistedIP(addr, s.whitelistPrefixes)
+		}
+	}
 	ipKey := rateLimitKey(ip)
 	// blockKey/blockable are computed only when the IP blocklist is enabled (skips the
 	// O(prefixes) isBlockableKey scan otherwise). blockKey keeps IPv6 at the full /128
 	// so a block never takes out a shared /64 (ipKey still aggregates to /64).
 	bKey := ""
 	blockable := false
-	if s.ipBlockEnabled {
+	if s.ipBlockEnabled && !whitelisted {
 		bKey = blockKey(ip)
 		blockable = blockSafe && isBlockableKey(ip, s.trustedProxyPrefixes, s.cloudflarePrefixes)
 	}
@@ -315,7 +416,7 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Reject keys that are on the temporary IP blocklist before doing any
 	// upgrade work. Checked ahead of the connection limiter so a blocked client
 	// cannot keep consuming attempt slots.
-	if s.ipBlockEnabled {
+	if s.ipBlockEnabled && !whitelisted {
 		if blocked, rejected := s.is.IsWsIPBlocked(bKey, time.Now()); blocked {
 			if s.metrics != nil {
 				s.metrics.WebsocketBlockedConnections.Inc()
@@ -332,7 +433,7 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	limited := false
-	if s.websocketLimiter != nil {
+	if s.websocketLimiter != nil && !whitelisted {
 		ok, reason := s.websocketLimiter.accept(ipKey, time.Now())
 		if !ok {
 			if s.metrics != nil {
@@ -352,6 +453,11 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, upgradeFailed+err.Error(), http.StatusServiceUnavailable)
 		return
 	}
+	// Upgrade inherits the HTTP server's read/write deadlines, which would break
+	// long-lived WebSocket streams.
+	// Clear them; outputLoop sets its own write deadlines.
+	_ = conn.SetReadDeadline(time.Time{})
+	_ = conn.SetWriteDeadline(time.Time{})
 	conn.SetReadLimit(maxWebsocketMessageBytes)
 	// a nil channel disables the per-connection pending request cap
 	var pendingRequests chan struct{}
@@ -368,10 +474,11 @@ func (s *WebsocketServer) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ipKey:               ipKey,
 		blockKey:            bKey,
 		blockable:           blockable,
+		limited:             limited,
 		requestHeader:       r.Header,
 		alive:               true,
 	}
-	if s.messageRateLimit > 0 {
+	if s.messageRateLimit > 0 && !whitelisted {
 		c.messageRate = newConnMessageRate(s.messageRateWindow)
 		// count ping/pong control frames too; gorilla handles them inside
 		// ReadMessage so they never reach inputLoop and would otherwise be a
@@ -577,6 +684,24 @@ func (c *websocketChannel) finalize(res *WsRes) {
 	}
 }
 
+// readLimitedMessage is conn.ReadMessage with the decompressed payload bounded
+// to limit bytes.
+func readLimitedMessage(conn *websocket.Conn) (messageType int, p []byte, tooLarge bool, err error) {
+	messageType, r, err := conn.NextReader()
+	if err != nil {
+		return 0, nil, false, err
+	}
+	// +1 so an exactly-limit-sized payload passes but anything larger is caught.
+	p, err = io.ReadAll(io.LimitReader(r, maxWebsocketMessageBytes+1))
+	if err != nil {
+		return messageType, nil, false, err
+	}
+	if int64(len(p)) > maxWebsocketMessageBytes {
+		return messageType, nil, true, nil
+	}
+	return messageType, p, false, nil
+}
+
 func (s *WebsocketServer) inputLoop(c *websocketChannel) {
 	defer func() {
 		if r := recover(); r != nil {
@@ -586,9 +711,14 @@ func (s *WebsocketServer) inputLoop(c *websocketChannel) {
 		}
 	}()
 	for {
-		t, d, err := c.conn.ReadMessage()
+		t, d, tooLarge, err := readLimitedMessage(c.conn)
 		if err != nil {
 			s.closeChannel(c, "read_error")
+			return
+		}
+		if tooLarge {
+			glog.Warning("Websocket message from ", c.id, " (", c.ip, ") exceeds ", maxWebsocketMessageBytes, " bytes after decompression")
+			s.closeChannel(c, "message_too_large")
 			return
 		}
 		switch t {
@@ -666,7 +796,6 @@ func (s *WebsocketServer) outputLoop(c *websocketChannel) {
 }
 
 func (s *WebsocketServer) onConnect(c *websocketChannel) {
-	glog.Info("Client connected ", c.id, ", ", c.ip)
 	s.metrics.WebsocketClients.Inc()
 }
 
@@ -675,11 +804,10 @@ func (s *WebsocketServer) onDisconnect(c *websocketChannel) {
 	s.unsubscribeNewTransaction(c)
 	s.unsubscribeAddresses(c)
 	s.unsubscribeFiatRates(c)
-	if s.websocketLimiter != nil {
+	if s.websocketLimiter != nil && c.limited {
 		s.websocketLimiter.release(c.ipKey, time.Now())
 	}
 	s.unregisterChannel(c)
-	glog.Info("Client disconnected ", c.id, ", ", c.ip)
 	s.metrics.WebsocketConnectionRequests.Observe(float64(atomic.LoadUint64(&c.requests)))
 	s.metrics.WebsocketClients.Dec()
 }
@@ -731,7 +859,7 @@ var requestHandlers = map[string]func(*WebsocketServer, *websocketChannel, *WsRe
 		r := WsBlockReq{}
 		err = json.Unmarshal(req.Params, &r)
 		if err == nil {
-			r.Page, r.PageSize = sanitizePagingParams(r.Page, r.PageSize, txsInAPI, maxWebsocketBlockPageSize)
+			r.Page, r.PageSize = sanitizePagingParams(r.Page, r.PageSize, maxWebsocketBlockPageSize, maxWebsocketBlockPageSize)
 			rv, err = s.getBlock(r.Id, r.Page, r.PageSize)
 		}
 		return
@@ -953,18 +1081,20 @@ func (s *WebsocketServer) onRequest(c *websocketChannel, req *WsReq) {
 			glog.V(1).Info("Client ", c.id, " onRequest ", req.Method, " success")
 			s.metrics.WebsocketRequests.With(common.Labels{"method": methodLabel, "status": "success"}).Inc()
 		} else {
-			if apiErr, ok := err.(*api.APIError); !ok || !apiErr.Public {
-				glog.Error("Client ", c.id, " onMessage ", req.Method, ": ", errors.ErrorStack(err), ", data ", string(req.Params))
+			if apiErr, ok := err.(*api.APIError); (!ok || !apiErr.Public) && s.errorLogBudget.allow(time.Now()) {
+				glog.Error("Client ", c.id, " onMessage ", req.Method, ": ", truncateWebsocketText(errors.ErrorStack(err)), ", data len ", len(req.Params), ", preview ", getWebsocketPayloadPreview(req.Params))
 			}
 			s.metrics.WebsocketRequests.With(common.Labels{"method": methodLabel, "status": "failure"}).Inc()
 			e := resultError{}
-			e.Error.Message = err.Error()
+			// the ws protocol returns the message for every error, public or not, so redact here
+			// redact before truncating so a cut URL cannot escape redaction
+			e.Error.Message = truncateWebsocketText(common.RedactURLs(err.Error()))
 			data = e
 		}
 	} else {
 		s.metrics.WebsocketUnknownMethods.With(common.Labels{"method": methodLabel}).Inc()
 		s.metrics.WebsocketRequests.With(common.Labels{"method": methodLabel, "status": "failure"}).Inc()
-		glog.V(1).Info("Client ", c.id, " onMessage ", req.Method, ": unknown method, data ", string(req.Params))
+		glog.V(1).Info("Client ", c.id, " onMessage ", getWebsocketPayloadPreview([]byte(req.Method)), ": unknown method, data len ", len(req.Params), ", preview ", getWebsocketPayloadPreview(req.Params))
 	}
 }
 
@@ -975,6 +1105,32 @@ func unmarshalGetAccountInfoRequest(params []byte) (*WsAccountInfoReq, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// privatePendingNonces extracts the declared in-flight private-transaction nonces from a
+// getAccountInfo request, capped at maxPrivatePendingNonces, returning a defensive copy (or nil
+// when none are declared). The copy prevents the request struct's backing array from being
+// retained past the request and keeps the downstream filter independent of it.
+func privatePendingNonces(p *WsPrivatePending) []uint64 {
+	if p == nil || len(p.Nonces) == 0 {
+		return nil
+	}
+	if len(p.Nonces) <= maxPrivatePendingNonces {
+		out := make([]uint64, len(p.Nonces))
+		copy(out, p.Nonces)
+		return out
+	}
+	// More declared nonces than we carry downstream - a malformed or hostile request, since a real
+	// wallet has only a handful of sequential in-flight nonces. Keep the LOWEST ones: the pending
+	// nonce advances from the backend's own answer across a contiguous run (see
+	// raiseToPendingFloor), so the slots just above that answer are the only ones that can be
+	// consumed, and anything dropped here sits above them and would have stranded anyway. Sorting
+	// first also keeps the answer independent of the order the client happened to send.
+	out := make([]uint64, len(p.Nonces))
+	copy(out, p.Nonces)
+	slices.Sort(out)
+
+	return out[:maxPrivatePendingNonces]
 }
 
 func (s *WebsocketServer) getAccountInfo(req *WsAccountInfoReq) (res *api.Address, err error) {
@@ -1006,13 +1162,14 @@ func (s *WebsocketServer) getAccountInfo(req *WsAccountInfoReq) (res *api.Addres
 		tokensToReturn = api.TokensToReturnDerived
 	}
 	filter := api.AddressFilter{
-		FromHeight:         uint32(req.FromHeight),
-		ToHeight:           uint32(req.ToHeight),
-		Contract:           req.ContractFilter,
-		Vout:               api.AddressFilterVoutOff,
-		TokensToReturn:     tokensToReturn,
-		Protocols:          req.Protocols,
-		WithConfirmedNonce: req.ConfirmedNonce,
+		FromHeight:           uint32(req.FromHeight),
+		ToHeight:             uint32(req.ToHeight),
+		Contract:             req.ContractFilter,
+		Vout:                 api.AddressFilterVoutOff,
+		TokensToReturn:       tokensToReturn,
+		Protocols:            req.Protocols,
+		WithConfirmedNonce:   req.ConfirmedNonce,
+		PrivatePendingNonces: privatePendingNonces(req.PrivatePending),
 	}
 	req.Page, req.PageSize = sanitizeAccountPagingParams(req.Page, req.PageSize, txsOnPage, txsInAPI)
 	req.Gap = validateIntValue(req.Gap, 0, 0, maxGapValue)
@@ -1396,11 +1553,11 @@ func (s *WebsocketServer) unmarshalAddresses(params []byte) ([]string, bool, err
 	if err != nil {
 		return nil, false, api.NewAPIError("Invalid subscribeAddresses params", true)
 	}
-	limit := maxWebsocketSubscribeAddresses
+	limit := s.maxSubscribeAddresses
 	if r.NewBlockTxs {
 		limit = maxWebsocketSubscribeAddressesWithNewBlockTxs
 	}
-	if len(r.Addresses) > limit {
+	if limit > 0 && len(r.Addresses) > limit {
 		return nil, false, api.NewAPIError("addresses max "+strconv.Itoa(limit), true)
 	}
 	rv := make([]string, 0, len(r.Addresses))

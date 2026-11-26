@@ -63,8 +63,13 @@ func NewInternalServer(binding, certFiles string, db *db.RocksDB, chain bchain.B
 	addr, path := splitBinding(binding)
 	serveMux := http.NewServeMux()
 	https := &http.Server{
-		Addr:    addr,
-		Handler: serveMux,
+		Addr:              addr,
+		Handler:           serveMux,
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpInternalWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 	s := &InternalServer{
 		htmlTemplates: htmlTemplates[InternalTemplateData]{
@@ -184,8 +189,47 @@ func (s *InternalServer) requireAdminAuth(next http.HandlerFunc) http.HandlerFun
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		// Browsers replay cached Basic credentials cross-origin, so reject
+		// state-changing requests forged by a page the admin visits (CSRF).
+		if isStateChangingMethod(r.Method) && !s.sameOrigin(r) {
+			// Logged so a Host-rewriting reverse proxy (which makes the Origin
+			// mismatch r.Host) is diagnosable rather than a silent 403.
+			glog.Warningf("admin: rejected cross-origin %s %s (Origin=%q Referer=%q Host=%q, client %s)",
+				r.Method, r.URL.Path, r.Header.Get("Origin"), r.Header.Get("Referer"), r.Host, r.RemoteAddr)
+			http.Error(w, "cross-origin request forbidden", http.StatusForbidden)
+			return
+		}
 		next(w, r)
 	}
+}
+
+// isStateChangingMethod reports whether a method can mutate state and needs CSRF
+// protection; the safe GET/HEAD/OPTIONS methods only read and are exempt.
+func isStateChangingMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return false
+	}
+	return true
+}
+
+// sameOrigin reports whether a state-changing request is same-origin. Browsers
+// send Origin/Referer cross-origin; clients that send neither (curl) are allowed.
+func (s *InternalServer) sameOrigin(r *http.Request) bool {
+	raw := r.Header.Get("Origin")
+	if raw == "" {
+		raw = r.Header.Get("Referer")
+	}
+	if raw == "" {
+		return true
+	}
+	scheme, host, ok := parseOrigin(raw)
+	if !ok || !strings.EqualFold(host, r.Host) {
+		return false
+	}
+	// When this server terminates TLS, a same-host request must also be https, so a
+	// plaintext page an on-path attacker serves on the port cannot forge to it.
+	return s.certFiles == "" || scheme == "https"
 }
 
 // validBasicAuth reports whether the request carries the configured admin Basic
@@ -273,17 +317,16 @@ type WsBlockedIPView struct {
 
 // InternalTemplateData is used to transfer data to the templates
 type InternalTemplateData struct {
-	CoinName               string
-	CoinShortcut           string
-	CoinLabel              string
-	ChainType              bchain.ChainType
-	Error                  *api.APIError
-	InternalDataErrors     []db.BlockInternalDataError
-	RefetchingInternalData bool
-	WsGetAccountInfoLimit  int
-	WsLimitExceedingIPs    []WsLimitExceedingIP
-	WsBlockedIPs           []WsBlockedIPView
-	RuntimeSettings        []RuntimeSettingView
+	CoinName              string
+	CoinShortcut          string
+	CoinLabel             string
+	ChainType             bchain.ChainType
+	Error                 *api.APIError
+	InternalDataErrors    []db.BlockInternalDataError
+	WsGetAccountInfoLimit int
+	WsLimitExceedingIPs   []WsLimitExceedingIP
+	WsBlockedIPs          []WsBlockedIPView
+	RuntimeSettings       []RuntimeSettingView
 }
 
 func (s *InternalServer) newTemplateData(r *http.Request) *InternalTemplateData {
@@ -328,20 +371,15 @@ func (s *InternalServer) adminIndex(w http.ResponseWriter, r *http.Request) (tpl
 	return adminIndexTpl, data, nil
 }
 
+// internalDataErrors lists the blocks queued for internal data healing. The queue is
+// drained by healInternalDataLoop, so the page is read-only.
 func (s *InternalServer) internalDataErrors(w http.ResponseWriter, r *http.Request) (tpl, *InternalTemplateData, error) {
-	if r.Method == http.MethodPost {
-		err := s.api.RefetchInternalData()
-		if err != nil {
-			return errorTpl, nil, err
-		}
-	}
 	data := s.newTemplateData(r)
 	internalErrors, err := s.db.GetBlockInternalDataErrorsEthereumType()
 	if err != nil {
 		return errorTpl, nil, err
 	}
 	data.InternalDataErrors = internalErrors
-	data.RefetchingInternalData = s.api.IsRefetchingInternalData()
 	return adminInternalErrorsTpl, data, nil
 }
 

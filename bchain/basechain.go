@@ -35,11 +35,6 @@ func (b *BaseChain) GetBlockRaw(hash string) (string, error) {
 	return "", errors.New("GetBlockRaw: not supported")
 }
 
-// GetMempoolEntry is not supported by default
-func (b *BaseChain) GetMempoolEntry(txid string) (*MempoolEntry, error) {
-	return nil, errors.New("GetMempoolEntry: not supported")
-}
-
 // GetAddressChainExtraData returns no chain-specific account/address data by default.
 func (b *BaseChain) GetAddressChainExtraData(addrDesc AddressDescriptor) (json.RawMessage, error) {
 	return nil, nil
@@ -50,13 +45,18 @@ func (b *BaseChain) LongTermFeeRate() (*LongTermFeeRate, error) {
 	return nil, errors.New("not supported")
 }
 
+// EthereumTypeGetBestTip is not supported
+func (b *BaseChain) EthereumTypeGetBestTip() (*EVMTip, error) {
+	return nil, errors.New("not supported")
+}
+
 // EthereumTypeGetBalance is not supported
 func (b *BaseChain) EthereumTypeGetBalance(addrDesc AddressDescriptor) (*big.Int, error) {
 	return nil, errors.New("not supported")
 }
 
 // EthereumTypeGetNonces is not supported
-func (b *BaseChain) EthereumTypeGetNonces(addrDesc AddressDescriptor, withConfirmed bool) (uint64, uint64, bool, error) {
+func (b *BaseChain) EthereumTypeGetNonces(addrDesc AddressDescriptor, withConfirmed bool, privatePendingNonces ...uint64) (uint64, uint64, bool, error) {
 	return 0, 0, false, errors.New("not supported")
 }
 

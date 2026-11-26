@@ -30,6 +30,15 @@ import (
 
 const txsOnPage = 25
 const blocksOnPage = 50
+
+// txIOCollapseThresholdTx is the input/output count above which the tx-detail
+// template collapses the list by default on the standalone tx page.
+const txIOCollapseThresholdTx = 8
+
+// txIOCollapseThresholdAggregate is the higher threshold used on aggregate pages
+// (address/xpub/block), where people scan many txs for their own address and a
+// collapsed (display:none) list would hide it from in-page find and tx-own highlighting.
+const txIOCollapseThresholdAggregate = 30
 const mempoolTxsOnPage = 50
 const txsInAPI = 1000
 const mempoolTxidsInAPI = 1000
@@ -123,6 +132,12 @@ func NewPublicServer(binding string, certFiles string, db *db.RocksDB, chain bch
 	https := &http.Server{
 		Addr:    addr,
 		Handler: handler,
+		// Bound slow request reads and idle keep-alive connections (see timeouts.go)
+		ReadHeaderTimeout: httpReadHeaderTimeout,
+		ReadTimeout:       httpReadTimeout,
+		WriteTimeout:      httpPublicWriteTimeout,
+		IdleTimeout:       httpIdleTimeout,
+		MaxHeaderBytes:    httpMaxHeaderBytes,
 	}
 
 	s := &PublicServer{
@@ -436,12 +451,13 @@ func getFunctionName(i interface{}) string {
 
 func (s *PublicServer) newTemplateData(r *http.Request) *TemplateData {
 	t := &TemplateData{
-		CoinName:         s.is.Coin,
-		CoinShortcut:     s.is.CoinShortcut,
-		CoinLabel:        s.is.CoinLabel,
-		ChainType:        s.chainParser.GetChainType(),
-		InternalExplorer: s.internalExplorer && !s.is.InitialSync,
-		TOSLink:          api.Text.TOSLink,
+		CoinName:              s.is.Coin,
+		CoinShortcut:          s.is.CoinShortcut,
+		CoinLabel:             s.is.CoinLabel,
+		ChainType:             s.chainParser.GetChainType(),
+		InternalExplorer:      s.internalExplorer && !s.is.GetInitialSync(),
+		TOSLink:               api.Text.TOSLink,
+		TxIOCollapseThreshold: txIOCollapseThresholdAggregate,
 	}
 	if t.ChainType == bchain.ChainEthereumType {
 		t.FungibleTokenName = bchain.EthereumTokenStandardMap[bchain.FungibleToken]
@@ -449,7 +465,7 @@ func (s *PublicServer) newTemplateData(r *http.Request) *TemplateData {
 		t.MultiTokenName = bchain.EthereumTokenStandardMap[bchain.MultiToken]
 	}
 	if !s.debug {
-		t.Minified = ".min.4"
+		t.Minified = ".min.5"
 	}
 	if s.is.HasFiatRates {
 		// get the secondary coin and if it should be shown either from query parameters "secondary" and "use_secondary"
@@ -555,6 +571,38 @@ type TemplateData struct {
 	TxDate                   string
 	TxSecondaryCoinRate      float64
 	TxTicker                 *common.CurrencyRatesTicker
+	TxIOCollapseThreshold    int
+	contractRates            map[contractRateKey]contractRate
+}
+
+type contractRateKey struct {
+	contract string
+	day      string
+}
+
+type contractRate struct {
+	rate  float64
+	found bool
+}
+
+// contractBaseRate memoizes GetContractBaseRate per page, keyed by TxDate (the day of the stored daily ticker),
+// so the DB fallback runs once per contract and day instead of once per token transfer row.
+// A nil TxTicker is not memoized: amountSpan may still set it, with TxDate, for later rows of the same day.
+// The lookup is a parameter so the memo can be tested without a Worker.
+func (td *TemplateData) contractBaseRate(contract string, lookup func(ticker *common.CurrencyRatesTicker, token string, timestamp int64) (float64, bool)) (float64, bool) {
+	if td.TxTicker == nil {
+		return 0, false
+	}
+	key := contractRateKey{contract: contract, day: td.TxDate}
+	if r, ok := td.contractRates[key]; ok {
+		return r.rate, r.found
+	}
+	rate, found := lookup(td.TxTicker, contract, td.Tx.Blocktime)
+	if td.contractRates == nil {
+		td.contractRates = make(map[contractRateKey]contractRate)
+	}
+	td.contractRates[key] = contractRate{rate: rate, found: found}
+	return rate, found
 }
 
 func defaultTxTemplate(chainType bchain.ChainType) string {
@@ -784,7 +832,7 @@ func (s *PublicServer) tokenAmountSpan(t *api.TokenTransfer, td *TemplateData, c
 					currentSecondary = formatSecondaryAmount(base*td.CurrentSecondaryCoinRate, td)
 					// get the historical rate only if current rate exist
 					// it is very costly to search in DB in vain for a rate for token for which there are no exchange rates
-					baseRate, found := s.api.GetContractBaseRate(td.TxTicker, t.Contract, td.Tx.Blocktime)
+					baseRate, found := td.contractBaseRate(t.Contract, s.api.GetContractBaseRate)
 					if found {
 						base := p * baseRate
 						txBase = strconv.FormatFloat(base, 'f', 6, 64)
@@ -967,6 +1015,7 @@ func (s *PublicServer) explorerTx(w http.ResponseWriter, r *http.Request) (tpl, 
 	}
 	data := s.newTemplateData(r)
 	data.Tx = tx
+	data.TxIOCollapseThreshold = txIOCollapseThresholdTx
 	return txTpl, data, nil
 }
 
@@ -1062,11 +1111,8 @@ func (s *PublicServer) getAddressQueryParams(r *http.Request, accountDetails api
 			voutFilter = api.AddressFilterVoutInputs
 		} else if filterParam == "outputs" {
 			voutFilter = api.AddressFilterVoutOutputs
-		} else {
-			voutFilter, ec := strconv.Atoi(filterParam)
-			if ec != nil || voutFilter < 0 {
-				voutFilter = api.AddressFilterVoutOff
-			}
+		} else if v, ec := strconv.Atoi(filterParam); ec == nil && v >= 0 {
+			voutFilter = v
 		}
 	}
 	switch r.URL.Query().Get("details") {
@@ -1310,7 +1356,8 @@ func (s *PublicServer) explorerSendTx(w http.ResponseWriter, r *http.Request) (t
 			res, err := s.chain.SendRawTransaction(hex, false)
 			if err != nil {
 				data.SendTxHex = hex
-				data.Error = &api.APIError{Text: err.Error(), Public: true}
+				// rendered straight into the page, so it bypasses the handler-level redaction
+				data.Error = &api.APIError{Text: common.RedactURLs(err.Error()), Public: true}
 				return sendTransactionTpl, data, nil
 			}
 			data.Status = "Transaction sent, result " + res
@@ -1711,7 +1758,10 @@ func (s *PublicServer) apiBlock(r *http.Request, apiVersion int) (interface{}, e
 	s.metrics.ExplorerViews.With(common.Labels{"action": "api-block"}).Inc()
 	if i := strings.LastIndexByte(r.URL.Path, '/'); i > 0 {
 		page := validateIntParam(r.URL.Query().Get("page"), 0, 0, maxPageNumber)
-		block, err = s.api.GetBlock(r.URL.Path[i+1:], page, txsInAPI)
+		// Every tx on a page is materialized from the tx cache/backend, so a caller that only
+		// needs a few txs of a busy block (e.g. a sampler) must be able to shrink the page.
+		pageSize := validateIntParam(r.URL.Query().Get("pageSize"), txsInAPI, 1, txsInAPI)
+		block, err = s.api.GetBlock(r.URL.Path[i+1:], page, pageSize)
 		if err == nil && apiVersion == apiV1 {
 			return s.api.BlockToV1(block), nil
 		}

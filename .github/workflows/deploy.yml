@@ -56,7 +56,7 @@ jobs:
       runner_matrix: ${{ steps.plan.outputs.runner_matrix }}
     steps:
       - name: Checkout workflow code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -66,7 +66,7 @@ jobs:
         run: python3 ./.github/scripts/validate_branch_or_tag.py --repo "$GITHUB_REPOSITORY" --ref "$REF_TO_VALIDATE"
 
       - name: Checkout requested branch or tag
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -89,7 +89,7 @@ jobs:
       test_coins_csv: ${{ steps.plan.outputs.test_coins_csv }}
     steps:
       - name: Checkout workflow code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
@@ -99,7 +99,7 @@ jobs:
         run: python3 ./.github/scripts/validate_branch_or_tag.py --repo "$GITHUB_REPOSITORY" --ref "$REF_TO_VALIDATE"
 
       - name: Checkout requested branch or tag
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -125,7 +125,7 @@ jobs:
     runs-on: ${{ fromJSON(matrix.labels_json) }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -134,6 +134,8 @@ jobs:
         uses: ./.github/actions/export-env-vars
         with:
           vars_json: ${{ toJSON(vars) }}
+          rpc_urls: ${{ secrets.BB_RPC_URLS }}
+          backend_peers: ${{ secrets.BB_BACKEND_PEERS }}
 
       - name: Build packages
         env:
@@ -157,7 +159,7 @@ jobs:
     runs-on: [self-hosted, bb-dev-selfhosted, "${{ matrix.runner }}"]
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -166,6 +168,7 @@ jobs:
         uses: ./.github/actions/export-env-vars
         with:
           vars_json: ${{ toJSON(vars) }}
+          rpc_urls: ${{ secrets.BB_RPC_URLS }}
 
       - name: Materialize blockbook runtime env
         env:
@@ -202,7 +205,7 @@ jobs:
       SYNC_TIMEOUT_SECONDS: "300"
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -211,6 +214,7 @@ jobs:
         uses: ./.github/actions/export-env-vars
         with:
           vars_json: ${{ toJSON(vars) }}
+          rpc_urls: ${{ secrets.BB_RPC_URLS }}
 
       - name: Wait for Blockbook sync
         env:
@@ -229,7 +233,7 @@ jobs:
       CONNECTIVITY_REGEX: ${{ needs.prepare_deploy.outputs.connectivity_regex }}
     steps:
       - name: Checkout code
-        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ env.RESOLVED_BRANCH_OR_TAG }}
           persist-credentials: false
@@ -238,6 +242,7 @@ jobs:
         uses: ./.github/actions/export-env-vars
         with:
           vars_json: ${{ toJSON(vars) }}
+          rpc_urls: ${{ secrets.BB_RPC_URLS }}
 
       - name: Run Blockbook connectivity tests
         env:
@@ -249,7 +254,7 @@ jobs:
         run: make test-connectivity ARGS="-v"
 
       - name: Setup Node.js for OpenAPI tests
-        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: 22
 
@@ -289,7 +294,7 @@ jobs:
       # run is exactly when the per-test breakdown (which coin/test failed or skipped) is most useful.
       - name: Upload OpenAPI e2e report
         if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: openapi-e2e-report
           path: tests/openapi/reports/

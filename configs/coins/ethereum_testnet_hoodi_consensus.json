@@ -24,15 +24,15 @@
         "package_name": "backend-ethereum-testnet-hoodi-consensus",
         "package_revision": "satoshilabs-1",
         "system_user": "ethereum",
-        "version": "7.1.0",
-        "binary_url": "https://github.com/OffchainLabs/prysm/releases/download/v7.1.0/beacon-chain-v7.1.0-linux-amd64",
+        "version": "7.3.2",
+        "binary_url": "https://github.com/OffchainLabs/prysm/releases/download/v7.3.2/beacon-chain-v7.3.2-linux-amd64",
         "verification_type": "sha256",
-        "verification_source": "a5402ea516d055f8ce150fff2ab4b73adbd8213789789e74c0e0a33eed3397ce",
+        "verification_source": "6aa73b8718370c295cb1c30b86bb80f6680e962f89b53dd438cde31a5301f0ab",
         "extract_command": "mv ${ARCHIVE} backend/beacon-chain && chmod +x backend/beacon-chain && echo",
         "exclude_files": [],
         "exec_command_template": "/bin/sh -c '{{.Env.BackendInstallPath}}/{{.Coin.Alias}}/beacon-chain --hoodi --accept-terms-of-use --execution-endpoint=http://localhost:{{.Ports.BackendAuthRpc}} --grpc-gateway-port=17506 --rpc-port=17507 --monitoring-port=17508 --p2p-tcp-port=13506 --p2p-udp-port=12506 --datadir={{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend --jwt-secret={{.Env.BackendDataPath}}/ethereum_testnet_hoodi/backend/erigon/jwt.hex --genesis-state={{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/genesis.ssz 2>>{{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/{{.Coin.Alias}}.log'",
         "logrotate_files_template": "{{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/{{.Coin.Alias}}.log",
-        "postinst_script_template": "wget https://github.com/eth-clients/holesky/raw/main/metadata/genesis.ssz -O {{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/genesis.ssz",
+        "postinst_script_template": "wget https://github.com/eth-clients/hoodi/raw/main/metadata/genesis.ssz -O {{.Env.BackendDataPath}}/{{.Coin.Alias}}/backend/genesis.ssz",
         "service_type": "simple",
         "service_additional_params_template": "",
         "protect_memory": true,
@@ -41,8 +41,8 @@
         "client_config_file": "",
         "platforms": {
             "arm64": {
-                "binary_url": "https://github.com/OffchainLabs/prysm/releases/download/v7.1.0/beacon-chain-v7.1.0-linux-arm64",
-                "verification_source": "afc18b5d0810ec6ba716bfc41b7bd574962214688be4ab71afac91d03d46826c"
+                "binary_url": "https://github.com/OffchainLabs/prysm/releases/download/v7.3.2/beacon-chain-v7.3.2-linux-arm64",
+                "verification_source": "da9020748fb596d82c6b27d102b3b1386ed99f39fe62a391421a1511c1ca5648"
             }
         }
     },

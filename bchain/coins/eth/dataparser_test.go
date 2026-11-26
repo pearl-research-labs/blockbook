@@ -3,7 +3,9 @@
 package eth
 
 import (
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/trezor/blockbook/bchain"
@@ -59,6 +61,24 @@ func Test_parseSimpleStringProperty(t *testing.T) {
 				t.Errorf("parseSimpleStringProperty = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+// A malicious contract can make a free eth_call return an arbitrarily large ABI string;
+// parseSimpleStringProperty must cap the decode at maxParsedStringBytes instead of honoring the
+// attacker-declared length.
+func Test_parseSimpleStringProperty_CapsOversizedString(t *testing.T) {
+	const declared = maxParsedStringBytes * 4
+	offset := "0000000000000000000000000000000000000000000000000000000000000020"
+	lengthWord := fmt.Sprintf("%064x", declared)
+	payload := strings.Repeat("41", declared) // 'A' repeated `declared` times
+
+	got := parseSimpleStringProperty("0x" + offset + lengthWord + payload)
+	if len(got) != maxParsedStringBytes {
+		t.Fatalf("decoded length = %d, want ceiling %d", len(got), maxParsedStringBytes)
+	}
+	if strings.Trim(got, "A") != "" {
+		t.Errorf("decoded string contains unexpected bytes, want all 'A'")
 	}
 }
 
@@ -478,6 +498,49 @@ func TestParseInputDataOverflowDynamicLength(t *testing.T) {
 	}
 }
 
+// Offsets pointing at the same child would decode it once per offset, so nested
+// arrays could expand small calldata into n^depth values.
+func TestParseInputDataRejectsOverlappingOffsets(t *testing.T) {
+	parser := NewEthereumParser(1, false)
+	words := func(w ...int) string {
+		s := "0xaabbccdd"
+		for _, v := range w {
+			s += fmt.Sprintf("%064x", v)
+		}
+		return s
+	}
+	tests := []struct {
+		name  string
+		param string
+		data  string
+		want  []string // nil -> method id only
+	}{
+		// offset, count 2, both element offsets -> one child: length 1, data 0xab
+		{name: "bytes[] shared element", param: "bytes[]", data: words(0x20, 2, 0x40, 0x40, 1) + "ab" + strings.Repeat("0", 62)},
+		// offset, count 2, both element offsets -> one inner array [7]
+		{name: "uint256[][] shared element", param: "uint256[][]", data: words(0x20, 2, 0x40, 0x40, 1, 7)},
+		{name: "uint256[][] distinct elements", param: "uint256[][]", data: words(0x20, 2, 0x40, 0x80, 1, 7, 1, 8), want: []string{"7", "8"}},
+		// empty values sharing one zero length word, as in real atomicMatch_ calldata
+		{name: "bytes[] shared empty element", param: "bytes[]", data: words(0x20, 2, 0x40, 0x40, 0), want: []string{"", ""}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			signatures := []bchain.FourByteSignature{{Name: "store", Parameters: []string{tt.param}}}
+			got := parser.ParseInputData(&signatures, tt.data)
+			if tt.want == nil {
+				want := &bchain.EthereumParsedInputData{MethodId: "0xaabbccdd"}
+				if !reflect.DeepEqual(got, want) {
+					t.Errorf("ParseInputData() = %#v, want %#v", got, want)
+				}
+				return
+			}
+			if got == nil || len(got.Params) != 1 || !reflect.DeepEqual(got.Params[0].Values, tt.want) {
+				t.Errorf("ParseInputData() = %#v, want values %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func Test_getEnsRecord(t *testing.T) {
 	tests := []struct {
 		name string
@@ -588,5 +651,36 @@ func Test_getEnsRecord(t *testing.T) {
 				t.Errorf("getEnsRecord() = %v, want %v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestParseInputDataTruncatesOversizedCalldata(t *testing.T) {
+	parser := NewEthereumParser(1, false)
+	signatures := []bchain.FourByteSignature{
+		{Name: "cancelMultipleMakerOrders", Parameters: []string{"uint256[]"}},
+	}
+	// Canonical ABI calldata for a uint256[] of zero elements: selector,
+	// offset word (0x20), count word, then `count` zero-value words.
+	buildCalldata := func(count int) string {
+		return fmt.Sprintf("0x9e53a69a%064x%064x%s", 0x20, count, strings.Repeat("0", 64*count))
+	}
+
+	oversized := buildCalldata(3000)
+	if len(oversized) <= maxParseInputDataLen {
+		t.Fatalf("test calldata not oversized: len=%d, limit=%d", len(oversized), maxParseInputDataLen)
+	}
+	got := parser.ParseInputData(&signatures, oversized)
+	want := &bchain.EthereumParsedInputData{MethodId: "0x9e53a69a", Truncated: true}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("ParseInputData(oversized) = %#v, want %#v", got, want)
+	}
+
+	// Negative control: a small array under the budget still decodes every value.
+	small := parser.ParseInputData(&signatures, buildCalldata(2))
+	if small.Truncated {
+		t.Errorf("ParseInputData(small) unexpectedly truncated: %#v", small)
+	}
+	if len(small.Params) != 1 || len(small.Params[0].Values) != 2 {
+		t.Errorf("ParseInputData(small) = %#v, want 1 param with 2 values", small)
 	}
 }

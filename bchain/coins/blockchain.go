@@ -35,8 +35,8 @@ import (
 	"github.com/trezor/blockbook/bchain/coins/fujicoin"
 	"github.com/trezor/blockbook/bchain/coins/gamecredits"
 	"github.com/trezor/blockbook/bchain/coins/grs"
+	"github.com/trezor/blockbook/bchain/coins/hyperevm"
 	"github.com/trezor/blockbook/bchain/coins/koto"
-	"github.com/trezor/blockbook/bchain/coins/liquid"
 	"github.com/trezor/blockbook/bchain/coins/litecoin"
 	"github.com/trezor/blockbook/bchain/coins/monacoin"
 	"github.com/trezor/blockbook/bchain/coins/monetaryunit"
@@ -52,6 +52,7 @@ import (
 	"github.com/trezor/blockbook/bchain/coins/qtum"
 	"github.com/trezor/blockbook/bchain/coins/ravencoin"
 	"github.com/trezor/blockbook/bchain/coins/ritocoin"
+	"github.com/trezor/blockbook/bchain/coins/robinhood"
 	"github.com/trezor/blockbook/bchain/coins/snowgem"
 	"github.com/trezor/blockbook/bchain/coins/trezarcoin"
 	"github.com/trezor/blockbook/bchain/coins/tron"
@@ -81,8 +82,6 @@ func init() {
 	BlockChainFactories["Ethereum Classic"] = eth.NewEthereumRPC
 	BlockChainFactories["Ethereum Testnet Sepolia"] = eth.NewEthereumRPC
 	BlockChainFactories["Ethereum Testnet Sepolia Archive"] = eth.NewEthereumRPC
-	BlockChainFactories["Ethereum Testnet Holesky"] = eth.NewEthereumRPC
-	BlockChainFactories["Ethereum Testnet Holesky Archive"] = eth.NewEthereumRPC
 	BlockChainFactories["Ethereum Testnet Hoodi"] = eth.NewEthereumRPC
 	BlockChainFactories["Ethereum Testnet Hoodi Archive"] = eth.NewEthereumRPC
 	BlockChainFactories["Bcash"] = bch.NewBCashRPC
@@ -109,7 +108,6 @@ func init() {
 	BlockChainFactories["DigiByte"] = digibyte.NewDigiByteRPC
 	BlockChainFactories["DigiByte Testnet"] = digibyte.NewDigiByteRPC
 	BlockChainFactories["Myriad"] = myriad.NewMyriadRPC
-	BlockChainFactories["Liquid"] = liquid.NewLiquidRPC
 	BlockChainFactories["Groestlcoin"] = grs.NewGroestlcoinRPC
 	BlockChainFactories["Groestlcoin Testnet"] = grs.NewGroestlcoinRPC
 	BlockChainFactories["Groestlcoin Signet"] = grs.NewGroestlcoinRPC
@@ -154,6 +152,9 @@ func init() {
 	BlockChainFactories["Arbitrum Nova Archive"] = arbitrum.NewArbitrumRPC
 	BlockChainFactories["Base"] = base.NewBaseRPC
 	BlockChainFactories["Base Archive"] = base.NewBaseRPC
+	BlockChainFactories["Robinhood Archive"] = robinhood.NewRobinhoodRPC
+	BlockChainFactories["Robinhood Testnet"] = robinhood.NewRobinhoodRPC
+	BlockChainFactories["HyperEVM Archive"] = hyperevm.NewHyperevmRPC
 	BlockChainFactories["Tron"] = tron.NewTronRPC
 	BlockChainFactories["Tron Testnet Nile"] = tron.NewTronRPC
 	BlockChainFactories["Pearl"] = pearl.NewPearlRPC
@@ -324,13 +325,23 @@ func (c *blockChainWithMetrics) LongTermFeeRate() (v *bchain.LongTermFeeRate, er
 }
 
 func (c *blockChainWithMetrics) SendRawTransaction(tx string, disableAlternativeRPC bool) (v string, err error) {
-	defer func(s time.Time) { c.observeRPCLatency("SendRawTransaction", s, err) }(time.Now())
+	defer func(s time.Time) {
+		c.observeRPCLatency("SendRawTransaction", s, err)
+		c.observeSendTx(err)
+	}(time.Now())
 	return c.b.SendRawTransaction(tx, disableAlternativeRPC)
 }
 
-func (c *blockChainWithMetrics) GetMempoolEntry(txid string) (v *bchain.MempoolEntry, err error) {
-	defer func(s time.Time) { c.observeRPCLatency("GetMempoolEntry", s, err) }(time.Now())
-	return c.b.GetMempoolEntry(txid)
+// observeSendTx counts a client broadcast by outcome and, when it failed, by the class of
+// rejection. This wrapper is the single point every API (websocket, REST, explorer form) and every
+// coin goes through, so it is where the overall send success rate is authoritative; the class is
+// what makes the failure rate actionable - a transaction refused on its own merits and a backend
+// that never answered are indistinguishable in a bare error ratio.
+func (c *blockChainWithMetrics) observeSendTx(err error) {
+	if c.m == nil || c.m.SendTxRequests == nil {
+		return
+	}
+	c.m.SendTxRequests.With(common.Labels{"status": bchain.SendTxStatus(err), "reason": bchain.ClassifySendTxError(err)}).Inc()
 }
 
 func (c *blockChainWithMetrics) GetChainParser() bchain.BlockChainParser {
@@ -342,9 +353,9 @@ func (c *blockChainWithMetrics) EthereumTypeGetBalance(addrDesc bchain.AddressDe
 	return c.b.EthereumTypeGetBalance(addrDesc)
 }
 
-func (c *blockChainWithMetrics) EthereumTypeGetNonces(addrDesc bchain.AddressDescriptor, withConfirmed bool) (pending uint64, confirmed uint64, confirmedOK bool, err error) {
+func (c *blockChainWithMetrics) EthereumTypeGetNonces(addrDesc bchain.AddressDescriptor, withConfirmed bool, privatePendingNonces ...uint64) (pending uint64, confirmed uint64, confirmedOK bool, err error) {
 	defer func(s time.Time) { c.observeRPCLatency("EthereumTypeGetNonces", s, err) }(time.Now())
-	return c.b.EthereumTypeGetNonces(addrDesc, withConfirmed)
+	return c.b.EthereumTypeGetNonces(addrDesc, withConfirmed, privatePendingNonces...)
 }
 
 func (c *blockChainWithMetrics) EthereumTypeEstimateGas(params map[string]interface{}) (v uint64, err error) {
@@ -425,6 +436,11 @@ func (c *blockChainWithMetrics) EthereumTypeGetTransactionReceipt(txid string) (
 	return c.b.EthereumTypeGetTransactionReceipt(txid)
 }
 
+func (c *blockChainWithMetrics) EthereumTypeGetBestTip() (v *bchain.EVMTip, err error) {
+	defer func(s time.Time) { c.observeRPCLatency("EthereumTypeGetBestTip", s, err) }(time.Now())
+	return c.b.EthereumTypeGetBestTip()
+}
+
 type mempoolWithMetrics struct {
 	mempool bchain.Mempool
 	m       *common.Metrics
@@ -472,6 +488,9 @@ func (c *mempoolWithMetrics) Resync() (count int, err error) {
 	}).Observe(throughput)
 	if err == nil {
 		c.m.MempoolSize.Set(float64(count))
+		// GaugeVec, not a plain gauge, so the series stays absent until this first
+		// successful reload instead of reading 0 from process start.
+		c.m.MempoolLastSync.With(common.Labels{"chain": c.chainTypeLabel()}).Set(float64(time.Now().Unix()))
 	}
 	return count, err
 }
@@ -536,6 +555,17 @@ func (c *blockChainWithMetrics) MissingBlockRetryOverride() *bchain.MissingBlock
 		MissingBlockRetryOverride() *bchain.MissingBlockRetry
 	}); ok {
 		return p.MissingBlockRetryOverride()
+	}
+	return nil
+}
+
+// XpubConfigOverride forwards the wrapped chain's per-chain xpub config
+// override through the metrics wrapper; nil when none is provided.
+func (c *blockChainWithMetrics) XpubConfigOverride() *bchain.XpubConfig {
+	if p, ok := c.b.(interface {
+		XpubConfigOverride() *bchain.XpubConfig
+	}); ok {
+		return p.XpubConfigOverride()
 	}
 	return nil
 }
