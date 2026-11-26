@@ -179,7 +179,7 @@ func (p *PearlParser) TxFromMsgTx(t *wire.MsgTx, parseAddresses bool) bchain.Tx 
 			ScriptSig: bchain.ScriptSig{
 				Hex: hex.EncodeToString(in.SignatureScript),
 			},
-			Witness: in.Witness,
+			Witness: in.DecodeWitness(),
 		}
 	}
 

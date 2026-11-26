@@ -8,6 +8,7 @@ import (
 	"math/big"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/pearl-research-labs/pearl/node/btcutil/hdkeychain"
 	"github.com/pearl-research-labs/pearl/node/chaincfg"
@@ -183,4 +184,45 @@ func testPearlRawTx(t *testing.T, parser *PearlParser) ([]byte, *wire.MsgTx, str
 	var buf bytes.Buffer
 	require.NoError(t, tx.Serialize(&buf))
 	return buf.Bytes(), tx, hex.EncodeToString(script)
+}
+
+// TestPearlParser_ParseBlockV4Certificate covers the FP8 hardfork, where every
+// block header carries a V4 certificate whose version prefix (04000000) leads
+// the serialized block.
+func TestPearlParser_ParseBlockV4Certificate(t *testing.T) {
+	parser := NewPearlParser("test", &Configuration{XPubMagic: testXPubMagic})
+	_, msgTx, _ := testPearlRawTx(t, parser)
+
+	prevHash, err := chainhash.NewHashFromStr("2222222222222222222222222222222222222222222222222222222222222222")
+	require.NoError(t, err)
+	merkleRoot := msgTx.TxHash()
+	header := wire.NewBlockHeader(1, prevHash, &merkleRoot, 0x1d00ffff)
+	header.Timestamp = time.Unix(1795000000, 0)
+
+	block := wire.MsgBlock{
+		MsgHeader: wire.MsgHeader{
+			MsgCertificate: wire.MsgCertificate{Certificate: &wire.CertificateV4{
+				Hash:            chainhash.Hash{0x01},
+				PublicData:      []byte{0x01, 0x02, 0x03, 0x04},
+				ProofData:       []byte{0xaa, 0xbb, 0xcc},
+				AncestorHeaders: []wire.BlockHeader{*header},
+			}},
+			BlockHeader: *header,
+		},
+		Transactions: []*wire.MsgTx{msgTx},
+	}
+	var buf bytes.Buffer
+	require.NoError(t, block.Serialize(&buf))
+	raw := buf.Bytes()
+	require.Equal(t, []byte{0x04, 0x00, 0x00, 0x00}, raw[:4])
+
+	got, err := parser.ParseBlock(raw)
+	require.NoError(t, err)
+	assert.Equal(t, prevHash.String(), got.Prev)
+	assert.Equal(t, len(raw), got.Size)
+	assert.Equal(t, int64(1795000000), got.Time)
+	require.Len(t, got.Txs, 1)
+	assert.Equal(t, msgTx.TxHash().String(), got.Txs[0].Txid)
+	require.Len(t, got.Txs[0].Vin, 1)
+	assert.Equal(t, [][]byte{{0x01, 0x02, 0x03}}, got.Txs[0].Vin[0].Witness)
 }
