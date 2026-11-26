@@ -659,7 +659,7 @@ func (s *PublicServer) parseTemplates() []*template.Template {
 		"formatUint32":             formatUint32,
 		"formatBigInt":             formatBigInt,
 		"setTxToTemplateData":      setTxToTemplateData,
-		"feePerByte":               feePerByte,
+		"feePerByte":               s.feePerByte,
 		"isOwnAddress":             isOwnAddress,
 		"toJSON":                   toJSON,
 		"tokenTransfersCount":      tokenTransfersCount,
@@ -955,14 +955,27 @@ func setTxToTemplateData(td *TemplateData, tx *api.Tx) *TemplateData {
 	return td
 }
 
+// feeRateUnit returns the name of the coin's smallest unit for display in fee rates.
+// Pearl (PRL) calls its base unit "grain"; other coins use the Bitcoin "sat".
+func feeRateUnit(coinShortcut string) string {
+	if strings.EqualFold(strings.TrimSpace(coinShortcut), "PRL") {
+		return "grain"
+	}
+	return "sat"
+}
+
 // feePerByte returns fee per vByte or Byte if vsize is unknown
-func feePerByte(tx *api.Tx) string {
+func (s *PublicServer) feePerByte(tx *api.Tx) string {
+	return formatFeePerByte(tx, feeRateUnit(s.is.CoinShortcut))
+}
+
+func formatFeePerByte(tx *api.Tx, unit string) string {
 	if tx.FeesSat != nil {
 		if tx.VSize > 0 {
-			return fmt.Sprintf("%.2f sat/vByte", float64(tx.FeesSat.AsInt64())/float64(tx.VSize))
+			return fmt.Sprintf("%.2f %s/vByte", float64(tx.FeesSat.AsInt64())/float64(tx.VSize), unit)
 		}
 		if tx.Size > 0 {
-			return fmt.Sprintf("%.2f sat/Byte", float64(tx.FeesSat.AsInt64())/float64(tx.Size))
+			return fmt.Sprintf("%.2f %s/Byte", float64(tx.FeesSat.AsInt64())/float64(tx.Size), unit)
 		}
 	}
 	return ""
