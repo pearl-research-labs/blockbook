@@ -945,11 +945,11 @@ func TestConnMessageRateClockSkew(t *testing.T) {
 }
 
 func TestWebsocketConnectionLimiterConnectionAttempts(t *testing.T) {
-	limiter := newWebsocketConnectionLimiter()
+	limiter := newWebsocketConnectionLimiter(defaultWsMaxConnectionsPerIP, defaultWsMaxConnectionAttemptsPerIP)
 	now := time.Unix(1700000000, 0)
 	ip := "192.0.2.10"
 
-	for i := 0; i < maxWebsocketConnectionAttemptsPerIP; i++ {
+	for i := 0; i < defaultWsMaxConnectionAttemptsPerIP; i++ {
 		ok, reason := limiter.accept(ip, now)
 		if !ok {
 			t.Fatalf("accept(%d) rejected with %q", i, reason)
@@ -969,12 +969,12 @@ func TestWebsocketConnectionLimiterConnectionAttempts(t *testing.T) {
 }
 
 func TestWebsocketConnectionLimiterActiveConnections(t *testing.T) {
-	limiter := newWebsocketConnectionLimiter()
+	limiter := newWebsocketConnectionLimiter(defaultWsMaxConnectionsPerIP, defaultWsMaxConnectionAttemptsPerIP)
 	now := time.Unix(1700000000, 0)
 	ip := "192.0.2.20"
 
-	for i := 0; i < maxWebsocketConnectionsPerIP; i++ {
-		if i > 0 && i%maxWebsocketConnectionAttemptsPerIP == 0 {
+	for i := 0; i < defaultWsMaxConnectionsPerIP; i++ {
+		if i > 0 && i%defaultWsMaxConnectionAttemptsPerIP == 0 {
 			now = now.Add(websocketConnectionAttemptWindow + time.Second)
 		}
 		ok, reason := limiter.accept(ip, now)
@@ -995,8 +995,21 @@ func TestWebsocketConnectionLimiterActiveConnections(t *testing.T) {
 	}
 }
 
+func TestWebsocketConnectionLimiterDisabled(t *testing.T) {
+	// 0 caps disable both the connection and attempt checks; accept never rejects.
+	limiter := newWebsocketConnectionLimiter(0, 0)
+	now := time.Unix(1700000000, 0)
+	ip := "192.0.2.60"
+
+	for i := 0; i < defaultWsMaxConnectionsPerIP+defaultWsMaxConnectionAttemptsPerIP+1; i++ {
+		if ok, reason := limiter.accept(ip, now); !ok {
+			t.Fatalf("accept(%d) rejected with %q on a disabled limiter", i, reason)
+		}
+	}
+}
+
 func TestWebsocketConnectionLimiterSweepEvictsIdleEntries(t *testing.T) {
-	limiter := newWebsocketConnectionLimiter()
+	limiter := newWebsocketConnectionLimiter(defaultWsMaxConnectionsPerIP, defaultWsMaxConnectionAttemptsPerIP)
 	now := time.Unix(1700000000, 0)
 	idle := "192.0.2.40"
 	active := "192.0.2.41"
@@ -1026,7 +1039,7 @@ func TestWebsocketConnectionLimiterSweepEvictsIdleEntries(t *testing.T) {
 }
 
 func TestWebsocketConnectionLimiterStats(t *testing.T) {
-	limiter := newWebsocketConnectionLimiter()
+	limiter := newWebsocketConnectionLimiter(defaultWsMaxConnectionsPerIP, defaultWsMaxConnectionAttemptsPerIP)
 	now := time.Unix(1700000000, 0)
 	a := "192.0.2.50"
 	b := "192.0.2.51"
@@ -1066,7 +1079,7 @@ func TestWebsocketConnectionLimiterStats(t *testing.T) {
 }
 
 func TestWebsocketConnectionLimiterCleanup(t *testing.T) {
-	limiter := newWebsocketConnectionLimiter()
+	limiter := newWebsocketConnectionLimiter(defaultWsMaxConnectionsPerIP, defaultWsMaxConnectionAttemptsPerIP)
 	now := time.Unix(1700000000, 0)
 	ip := "192.0.2.30"
 
@@ -1106,14 +1119,67 @@ func TestEstimateFeeRejectsTooManyBlocks(t *testing.T) {
 	}
 }
 
+func TestConfigureSubscribeAddressesLimitDefaultsByChainFamily(t *testing.T) {
+	for _, tc := range []struct {
+		chainType bchain.ChainType
+		want      int
+	}{
+		{bchain.ChainBitcoinType, defaultWsMaxSubscribeAddressesUTXO},
+		{bchain.ChainEthereumType, defaultWsMaxSubscribeAddressesEVM},
+	} {
+		s := &WebsocketServer{}
+		if err := s.configureSubscribeAddressesLimit("fake", tc.chainType); err != nil {
+			t.Fatal(err)
+		}
+		if s.maxSubscribeAddresses != tc.want {
+			t.Fatalf("chain type %d: maxSubscribeAddresses = %d, want %d", tc.chainType, s.maxSubscribeAddresses, tc.want)
+		}
+	}
+	if defaultWsMaxSubscribeAddressesUTXO <= defaultWsMaxSubscribeAddressesEVM {
+		t.Fatal("UTXO default must exceed the EVM default: a UTXO wallet subscribes every derived address")
+	}
+}
+
+func TestConfigureSubscribeAddressesLimitEnvOverride(t *testing.T) {
+	t.Setenv("FAKE_WS_MAX_SUBSCRIBE_ADDRESSES", "7")
+	s := &WebsocketServer{}
+	if err := s.configureSubscribeAddressesLimit("fake", bchain.ChainBitcoinType); err != nil {
+		t.Fatal(err)
+	}
+	if s.maxSubscribeAddresses != 7 {
+		t.Fatalf("maxSubscribeAddresses = %d, want 7", s.maxSubscribeAddresses)
+	}
+
+	t.Setenv("FAKE_WS_MAX_SUBSCRIBE_ADDRESSES", "-1")
+	if err := s.configureSubscribeAddressesLimit("fake", bchain.ChainBitcoinType); err == nil {
+		t.Fatal("expected error for a negative value")
+	}
+}
+
+func TestUnmarshalAddressesZeroLimitDisablesCap(t *testing.T) {
+	addresses := make([]string, defaultWsMaxSubscribeAddressesUTXO+1)
+	for i := range addresses {
+		addresses[i] = dbtestdata.Addr1
+	}
+	params, err := json.Marshal(WsSubscribeAddressesReq{Addresses: addresses})
+	if err != nil {
+		t.Fatal(err)
+	}
+	parser, _ := setupChain(t)
+	s := &WebsocketServer{chainParser: parser, maxSubscribeAddresses: 0}
+	if _, _, err := s.unmarshalAddresses(params); err != nil {
+		t.Fatalf("limit 0 must disable the cap, got %v", err)
+	}
+}
+
 func TestUnmarshalAddressesRejectsTooManyAddresses(t *testing.T) {
-	addresses := make([]string, maxWebsocketSubscribeAddresses+1)
+	addresses := make([]string, defaultWsMaxSubscribeAddressesEVM+1)
 	params, err := json.Marshal(WsSubscribeAddressesReq{Addresses: addresses})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	s := &WebsocketServer{}
+	s := &WebsocketServer{maxSubscribeAddresses: defaultWsMaxSubscribeAddressesEVM}
 	_, _, err = s.unmarshalAddresses(params)
 	if err == nil {
 		t.Fatal("expected error")
@@ -1441,8 +1507,11 @@ func TestWebsocketShutdownWaitsForInFlightWork(t *testing.T) {
 	go func() {
 		// Simulate a DB-touching goroutine that takes some time.
 		time.Sleep(50 * time.Millisecond)
-		s.workDone()
+		// Signal completion before workDone(): workDone() is what releases
+		// Shutdown, so closing afterwards races with the check below and the
+		// non-blocking select can observe finished as still open.
 		close(finished)
+		s.workDone()
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)

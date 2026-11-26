@@ -26,20 +26,21 @@ const defaultRPCTimeoutSeconds = 15
 // Configuration is the blockchaincfg.json shape for Bitcoin-type chains.
 // It mirrors the fields Blockbook expects for RPC auth + mempool settings.
 type Configuration struct {
-	CoinName             string `json:"coin_name"`
-	CoinShortcut         string `json:"coin_shortcut"`
-	RPCURL               string `json:"rpc_url"`
-	RPCUser              string `json:"rpc_user"`
-	RPCPass              string `json:"rpc_pass"`
-	RPCTimeout           int    `json:"rpc_timeout"`
-	Parse                bool   `json:"parse"`
-	MessageQueueBinding  string `json:"message_queue_binding"`
-	Subversion           string `json:"subversion"`
-	AddressFormat        string `json:"address_format"`
-	XPubMagic            uint32 `json:"xpub_magic,omitempty"`
-	BlockAddressesToKeep int    `json:"block_addresses_to_keep"`
-	MempoolWorkers       int    `json:"mempool_workers"`
-	MempoolSubWorkers    int    `json:"mempool_sub_workers"`
+	CoinName             string              `json:"coin_name"`
+	CoinShortcut         string              `json:"coin_shortcut"`
+	RPCURL               string              `json:"rpc_url"`
+	RPCUser              string              `json:"rpc_user"`
+	RPCPass              string              `json:"rpc_pass"`
+	RPCTimeout           int                 `json:"rpc_timeout"`
+	Parse                bool                `json:"parse"`
+	MessageQueueBinding  string              `json:"message_queue_binding"`
+	MessageQueueCurve    *bchain.CurveConfig `json:"message_queue_curve,omitempty"`
+	Subversion           string              `json:"subversion"`
+	AddressFormat        string              `json:"address_format"`
+	XPubMagic            uint32              `json:"xpub_magic,omitempty"`
+	BlockAddressesToKeep int                 `json:"block_addresses_to_keep"`
+	MempoolWorkers       int                 `json:"mempool_workers"`
+	MempoolSubWorkers    int                 `json:"mempool_sub_workers"`
 }
 
 // PearlRPC is a Blockbook chain implementation for Pearl that uses pearl/node libraries.
@@ -165,7 +166,7 @@ func (d *PearlRPC) InitializeMempool(addrDescForOutpoint bchain.AddrDescForOutpo
 		TxSubscribe:    "hashtx",
 		TxReceive:      "hashtx",
 	}
-	mq, err := bchain.NewMQ(d.cfg.MessageQueueBinding, d.pushHandler, pearlTopics)
+	mq, err := bchain.NewMQ(d.cfg.MessageQueueBinding, d.cfg.MessageQueueCurve, d.pushHandler, pearlTopics)
 	if err != nil {
 		glog.Error("mq: ", err)
 		return err
@@ -507,45 +508,6 @@ func (d *PearlRPC) SendRawTransaction(tx string, allowHighFees bool) (string, er
 		return "", err
 	}
 	return hash, nil
-}
-
-func (d *PearlRPC) GetMempoolEntry(txid string) (*bchain.MempoolEntry, error) {
-	var entry btcjson.GetMempoolEntryResult
-	if err := d.call(btcjson.NewGetMempoolEntryCmd(txid), &entry); err != nil {
-		return nil, err
-	}
-	fee, err := btcutil.NewAmount(entry.Fee)
-	if err != nil {
-		return nil, err
-	}
-	modifiedFee, err := btcutil.NewAmount(entry.ModifiedFee)
-	if err != nil {
-		return nil, err
-	}
-	descendantFees, err := btcutil.NewAmount(entry.DescendantFees)
-	if err != nil {
-		return nil, err
-	}
-	ancestorFees, err := btcutil.NewAmount(entry.AncestorFees)
-	if err != nil {
-		return nil, err
-	}
-	return &bchain.MempoolEntry{
-		Size:            uint32(entry.VSize),
-		FeeSat:          *big.NewInt(int64(fee)),
-		Fee:             common.JSONNumber(formatFloat(entry.Fee)),
-		ModifiedFeeSat:  *big.NewInt(int64(modifiedFee)),
-		ModifiedFee:     common.JSONNumber(formatFloat(entry.ModifiedFee)),
-		Time:            uint64(entry.Time),
-		Height:          uint32(entry.Height),
-		DescendantCount: uint32(entry.DescendantCount),
-		DescendantSize:  uint32(entry.DescendantSize),
-		DescendantFees:  uint32(descendantFees),
-		AncestorCount:   uint32(entry.AncestorCount),
-		AncestorSize:    uint32(entry.AncestorSize),
-		AncestorFees:    uint32(ancestorFees),
-		Depends:         entry.Depends,
-	}, nil
 }
 
 // ---- helpers ----

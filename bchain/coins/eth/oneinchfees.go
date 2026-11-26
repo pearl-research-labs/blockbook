@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/golang/glog"
 	"github.com/juju/errors"
 	"github.com/trezor/blockbook/bchain"
 	"github.com/trezor/blockbook/common"
@@ -49,21 +48,10 @@ type oneInchFeeFeesResult struct {
 	Instant oneInchFeeFeeResult `json:"instant"`
 }
 
-type oneInchFeeParams struct {
-	URL           string `json:"url"`
-	PeriodSeconds int    `json:"periodSeconds"`
-}
-
 type oneInchFeeProvider struct {
 	*alternativeFeeProvider
-	params oneInchFeeParams
+	params feeProviderParams
 	apiKey string
-}
-
-const oneInchFeeStalePeriods = 30
-
-func oneInchFeeStaleDuration(periodSeconds int) time.Duration {
-	return time.Duration(periodSeconds*oneInchFeeStalePeriods) * time.Second
 }
 
 // NewOneInchFeesProvider initializes https://api.1inch.dev provider
@@ -73,7 +61,7 @@ func NewOneInchFeesProvider(chain bchain.BlockChain, params string, metrics *com
 	if err != nil {
 		return nil, err
 	}
-	if p.params.URL == "" || p.params.PeriodSeconds == 0 {
+	if p.params.URL == "" || p.params.PeriodSeconds <= 0 {
 		return nil, errors.New("NewOneInchFeesProvider: missing config parameters 'url' or 'periodSeconds'.")
 	}
 	p.apiKey = os.Getenv("ONE_INCH_API_KEY")
@@ -81,25 +69,21 @@ func NewOneInchFeesProvider(chain bchain.BlockChain, params string, metrics *com
 		return nil, errors.New("NewOneInchFeesProvider: missing ONE_INCH_API_KEY env variable.")
 	}
 	p.chain = chain
-	p.staleSyncDuration = oneInchFeeStaleDuration(p.params.PeriodSeconds)
-	go p.FeeDownloader()
+	// Fees are fetched on demand: cached for periodSeconds, kept through
+	// throttling bursts for the configured stale window (defaults to 10 minutes).
+	p.ttl = time.Duration(p.params.PeriodSeconds) * time.Second
+	p.staleSyncDuration = feeStaleDuration(p.params.PeriodSeconds, p.params.StaleSeconds)
+	p.fetch = p.fetchFees
+	go p.warmUp()
 	return p, nil
 }
 
-func (p *oneInchFeeProvider) FeeDownloader() {
-	period := time.Duration(p.params.PeriodSeconds) * time.Second
-	timer := time.NewTimer(period)
-	for {
-		var data oneInchFeeFeesResult
-		err := p.getData(&data)
-		if err != nil {
-			glog.Error("oneInchFeeProvider.FeeDownloader", err)
-		} else {
-			p.processData(&data)
-		}
-		<-timer.C
-		timer.Reset(period)
+func (p *oneInchFeeProvider) fetchFees() (*bchain.Eip1559Fees, error) {
+	var data oneInchFeeFeesResult
+	if err := p.getData(&data); err != nil {
+		return nil, err
 	}
+	return oneInchFeesFromData(&data), nil
 }
 
 func bigIntFromString(s string) *big.Int {
@@ -115,7 +99,7 @@ func oneInchFeesFromResult(result *oneInchFeeFeeResult) *bchain.Eip1559Fee {
 	return &fee
 }
 
-func (p *oneInchFeeProvider) processData(data *oneInchFeeFeesResult) bool {
+func oneInchFeesFromData(data *oneInchFeeFeesResult) *bchain.Eip1559Fees {
 	fees := bchain.Eip1559Fees{}
 	fees.BaseFeePerGas = bigIntFromString(data.BaseFee)
 	// 1inch's tiers are tighter than Infura's. Remap so the suite's low/medium/high map
@@ -127,11 +111,7 @@ func (p *oneInchFeeProvider) processData(data *oneInchFeeFeesResult) bool {
 	fees.Low = oneInchFeesFromResult(&data.Medium)
 	fees.Medium = oneInchFeesFromResult(&data.High)
 	fees.High = oneInchFeesFromResult(&data.Instant)
-	p.mux.Lock()
-	defer p.mux.Unlock()
-	p.observeSync(time.Now())
-	p.eip1559Fees = &fees
-	return true
+	return &fees
 }
 
 func (p *oneInchFeeProvider) getData(res interface{}) error {
@@ -142,7 +122,7 @@ func (p *oneInchFeeProvider) getData(res interface{}) error {
 	}
 	httpReq.Header.Set("Content-Type", "application/json")
 	httpReq.Header.Set("Authorization", " Bearer "+p.apiKey)
-	httpRes, err := http.DefaultClient.Do(httpReq)
+	httpRes, err := feeHTTPClient.Do(httpReq)
 	if httpRes != nil {
 		defer httpRes.Body.Close()
 	}

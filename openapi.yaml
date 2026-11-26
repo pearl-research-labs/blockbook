@@ -158,6 +158,7 @@ paths:
           schema:
             type: string
         - $ref: "#/components/parameters/Page"
+        - $ref: "#/components/parameters/BlockPageSize"
       responses:
         "200":
           description: Block details.
@@ -1224,7 +1225,23 @@ components:
     PageSize:
       name: pageSize
       in: query
-      description: Number of history items per page. The default and maximum for REST account endpoints is 1000.
+      description: >-
+        Number of history items per page. The default and maximum for REST account endpoints
+        is 1000. Unconfirmed transactions take the first slots of the paged history and count
+        towards both pageSize and totalPages, so a page is never longer than pageSize and, as
+        long as the account's pending set does not change between page requests, walking all
+        pages returns every transaction exactly once. A pending transaction that is replaced
+        or evicted mid-walk shifts the following pages; for a walk that is consistent under
+        mempool churn, set the to parameter to the current best height, which pages only the
+        confirmed history.
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 1000
+    BlockPageSize:
+      name: pageSize
+      in: query
+      description: Number of transactions per block page. The default and maximum is 1000.
       schema:
         type: integer
         minimum: 1
@@ -1494,6 +1511,7 @@ components:
           gasLimit: 550941
           gasUsed: 434686
           gasPrice: "44035608242"
+          effectiveGasPrice: "44035608242"
           maxPriorityFeePerGas: "44035608243"
           maxFeePerGas: "44035608244"
           baseFeePerGas: "2035608244"
@@ -2085,6 +2103,9 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/EthereumParsedInputParam"
+        parsedDataTruncated:
+          type: boolean
+          description: True when input data exceeded the parse-size budget and parameters were not decoded.
 
     EthereumSpecific:
       type: object
@@ -2109,6 +2130,8 @@ components:
           type: integer
           format: int64
         gasPrice:
+          $ref: "#/components/schemas/AmountString"
+        effectiveGasPrice:
           $ref: "#/components/schemas/AmountString"
         maxPriorityFeePerGas:
           $ref: "#/components/schemas/AmountString"
@@ -2859,6 +2882,25 @@ components:
           type: integer
         confirmedNonce:
           type: boolean
+        privatePending:
+          $ref: "#/components/schemas/WsPrivatePending"
+
+    WsPrivatePending:
+      description: >-
+        Ethereum-like only: the private (alternative send-tx / relay) transactions the wallet knows
+        are in flight for the queried address. Only nonces drive behavior; txids are reserved for
+        future use. See docs/evm-send.md.
+      type: object
+      properties:
+        nonces:
+          type: array
+          items:
+            type: integer
+            format: int64
+        txids:
+          type: array
+          items:
+            type: string
 
     WsContractInfoReq:
       type: object
@@ -3002,6 +3044,8 @@ components:
               type: string
             value:
               type: string
+            privatePending:
+              $ref: "#/components/schemas/WsPrivatePending"
 
     Eip1559Fee:
       type: object

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"math/big"
 	"strconv"
+	"time"
 
 	"github.com/golang/glog"
 	"github.com/juju/errors"
@@ -112,6 +113,10 @@ func (b *TronRPC) GetMempoolTransactions() ([]string, error) {
 
 // GetAddressChainExtraData returns normalized Tron-specific account/address data.
 func (b *TronRPC) GetAddressChainExtraData(addrDesc bchain.AddressDescriptor) (json.RawMessage, error) {
+	// only a 20-byte account has chain data; a client-supplied ad: descriptor of any length would hit quadratic base58
+	if len(addrDesc) != TronTypeAddressDescriptorLen {
+		return nil, nil
+	}
 	ctx, cancel := context.WithTimeout(b.requestContext(), b.Timeout)
 	defer cancel()
 
@@ -283,18 +288,27 @@ func (b *TronRPC) SendRawTransaction(tx string, disableAlternativeRPC bool) (str
 	ctx, cancel := context.WithTimeout(b.requestContext(), b.Timeout)
 	defer cancel()
 
+	// A send is the only moment Blockbook sees a transaction the wallet cares about before it is
+	// indexed, so log the outcome and txid - a later "my tx vanished" report has nothing else to
+	// reconcile against on a chain with no pending-tx feed.
+	start := time.Now()
 	resp, err := b.requestBroadcastHex(ctx, strip0xPrefix(tx))
+	duration := time.Since(start).Round(time.Millisecond)
 	if err != nil {
+		glog.Errorf("tron broadcasthex failed after %v: %v", duration, err)
 		return "", err
 	}
 	if !resp.Result {
 		if resp.Code != "" || resp.Message != "" {
+			glog.Errorf("tron broadcasthex rejected txid %s after %v: %s %s", strip0xPrefix(resp.TxID), duration, resp.Code, resp.Message)
 			return "", errors.Errorf("Tron broadcasthex failed: %s %s", resp.Code, resp.Message)
 		}
+		glog.Errorf("tron broadcasthex rejected txid %s after %v without a reason", strip0xPrefix(resp.TxID), duration)
 		return "", errors.New("Tron broadcasthex failed")
 	}
 
 	txID := strip0xPrefix(resp.TxID)
+	glog.Infof("tron broadcasthex accepted txid %s in %v", txID, duration)
 	if b.ChainConfig != nil && b.ChainConfig.DisableMempoolSync && b.Mempool != nil {
 		b.Mempool.AddTransactionToMempool(txID)
 	}
